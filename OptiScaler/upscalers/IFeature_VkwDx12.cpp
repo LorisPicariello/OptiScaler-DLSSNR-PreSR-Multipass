@@ -2058,31 +2058,32 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
     if (!IsInited())
         return false;
 
+    struct RestoreBridgeParameters
+    {
+        NVSDK_NGX_Parameter* parameters;
+        struct Binding
+        {
+            const char* name;
+            void* resource = nullptr;
+        } resources[6] {
+            { NVSDK_NGX_Parameter_Color },           { NVSDK_NGX_Parameter_MotionVectors },
+            { NVSDK_NGX_Parameter_Output },          { NVSDK_NGX_Parameter_Depth },
+            { NVSDK_NGX_Parameter_ExposureTexture }, { NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask }
+        };
+        explicit RestoreBridgeParameters(NVSDK_NGX_Parameter* params) : parameters(params)
+        {
+            for (auto& binding : resources)
+                parameters->Get(binding.name, &binding.resource);
+        }
+        ~RestoreBridgeParameters()
+        {
+            for (const auto& binding : resources)
+                parameters->Set(binding.name, binding.resource);
+        }
+    } restoreParameters { InParameters };
+
     auto frame = _frameCount % VKDX12_BUFFER_COUNT;
     auto cmdList = Dx12CommandList[frame];
-
-    void* originalColor = nullptr;
-    void* originalMotionVectors = nullptr;
-    void* originalOutput = nullptr;
-    void* originalDepth = nullptr;
-    void* originalExposure = nullptr;
-    void* originalReactiveMask = nullptr;
-    InParameters->Get(NVSDK_NGX_Parameter_Color, &originalColor);
-    InParameters->Get(NVSDK_NGX_Parameter_MotionVectors, &originalMotionVectors);
-    InParameters->Get(NVSDK_NGX_Parameter_Output, &originalOutput);
-    InParameters->Get(NVSDK_NGX_Parameter_Depth, &originalDepth);
-    InParameters->Get(NVSDK_NGX_Parameter_ExposureTexture, &originalExposure);
-    InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, &originalReactiveMask);
-
-    auto RestoreVulkanParameters = [&]()
-    {
-        InParameters->Set(NVSDK_NGX_Parameter_Color, originalColor);
-        InParameters->Set(NVSDK_NGX_Parameter_MotionVectors, originalMotionVectors);
-        InParameters->Set(NVSDK_NGX_Parameter_Output, originalOutput);
-        InParameters->Set(NVSDK_NGX_Parameter_Depth, originalDepth);
-        InParameters->Set(NVSDK_NGX_Parameter_ExposureTexture, originalExposure);
-        InParameters->Set(NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, originalReactiveMask);
-    };
 
     bool dx12EvalResult = false;
     bool interopPrepared = false;
@@ -2119,7 +2120,6 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
     {
         if (interopPrepared)
             AbortPendingInterop(InCmdBuffer, frame);
-        RestoreVulkanParameters();
         return false;
     }
 
@@ -2127,18 +2127,8 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
     {
         LOG_ERROR("Can't copy output texture back!");
         AbortPendingInterop(InCmdBuffer, frame);
-        RestoreVulkanParameters();
         return false;
     }
-
-    // Not restoring the original values of NVSDK_NGX_Parameter_Color etc.
-    // Unsure if that's a potential problem but in theory the game should only be setting those
-    InParameters->Set(NVSDK_NGX_Parameter_Color, (void*) nullptr);
-    InParameters->Set(NVSDK_NGX_Parameter_MotionVectors, (void*) nullptr);
-    InParameters->Set(NVSDK_NGX_Parameter_Output, (void*) nullptr);
-    InParameters->Set(NVSDK_NGX_Parameter_Depth, (void*) nullptr);
-    InParameters->Set(NVSDK_NGX_Parameter_ExposureTexture, (void*) nullptr);
-    InParameters->Set(NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, (void*) nullptr);
 
     _frameCount++;
 

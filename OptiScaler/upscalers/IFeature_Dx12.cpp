@@ -5,7 +5,194 @@
 
 #include "IFeature_Dx12.h"
 #include "State.h"
-#include <dlssnr/DlssNr.h>
+
+namespace
+{
+bool HasSupportedNrSubrects(NVSDK_NGX_Parameter* parameters)
+{
+    const char* offsets[] {
+        NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y,
+        NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y,
+        NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X,     NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y,
+        NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X,      NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y
+    };
+    for (const auto* name : offsets)
+    {
+        unsigned int offset = 0;
+        if (parameters->Get(name, &offset) == NVSDK_NGX_Result_Success && offset != 0)
+            return false;
+    }
+    return true;
+}
+
+ID3D12Resource* NrResource(NVSDK_NGX_Parameter* parameters, const char* name, const char* fallback)
+{
+    ID3D12Resource* resource = GetUpscalerResource_Dx12(parameters, name);
+    if (resource == nullptr)
+        resource = GetUpscalerResource_Dx12(parameters, fallback);
+    return resource;
+}
+
+void NrBarrier(ID3D12GraphicsCommandList* commandList, ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
+               D3D12_RESOURCE_STATES after)
+{
+    if (resource == nullptr || before == after)
+        return;
+    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(resource, before, after);
+    commandList->ResourceBarrier(1, &barrier);
+}
+
+struct NrInputStates
+{
+    D3D12_RESOURCE_STATES color;
+    D3D12_RESOURCE_STATES depth;
+    D3D12_RESOURCE_STATES motion;
+    D3D12_RESOURCE_STATES exposure;
+};
+
+NrInputStates NrStates(bool interop)
+{
+    constexpr auto readable = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    if (interop)
+        return { readable, readable, readable, readable };
+
+    const auto& cfg = *Config::Instance();
+    const bool unreal = State::Instance().NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL ||
+                        State::Instance().gameEngine == GameEngineType::Unreal ||
+                        (State::Instance().gameQuirks & GameQuirk::ForceUnrealEngine);
+    return { static_cast<D3D12_RESOURCE_STATES>(
+                 cfg.ColorResourceBarrier.value_or(unreal ? D3D12_RESOURCE_STATE_RENDER_TARGET : readable)),
+             static_cast<D3D12_RESOURCE_STATES>(cfg.DepthResourceBarrier.value_or(readable)),
+             static_cast<D3D12_RESOURCE_STATES>(
+                 cfg.MVResourceBarrier.value_or(unreal ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : readable)),
+             static_cast<D3D12_RESOURCE_STATES>(cfg.ExposureResourceBarrier.value_or(readable)) };
+}
+} // namespace
+
+ShaderPass_Dx12 MakeDlssNrPass(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12GraphicsCommandList* commandList,
+                               NVSDK_NGX_Parameter* parameters, bool beforeUpscale, unsigned int featureFlags,
+                               ID3D12CommandQueue* timingQueue, bool interop)
+{
+    auto* color = NrResource(parameters, NVSDK_NGX_Parameter_Color, "DLSSD.Color");
+    auto* depth = NrResource(parameters, NVSDK_NGX_Parameter_Depth, "DLSSD.Depth");
+    auto* motion = NrResource(parameters, NVSDK_NGX_Parameter_MotionVectors, "DLSSD.MotionVectors");
+    auto* exposure = NrResource(parameters, NVSDK_NGX_Parameter_ExposureTexture, "DLSSD.ExposureTexture");
+    const auto states = NrStates(interop);
+    const bool supportedSubrects = HasSupportedNrSubrects(parameters);
+
+    DlssNrFrameInfo frame {};
+    frame.BeforeUpscale = beforeUpscale;
+    frame.DepthInverted = (featureFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
+    frame.ColourIsLinearHdr = (featureFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0;
+    unsigned int reset = 0;
+    parameters->Get(NVSDK_NGX_Parameter_Reset, &reset);
+    frame.Reset = reset != 0;
+    parameters->Get(NVSDK_NGX_Parameter_MV_Scale_X, &frame.MvScaleX);
+    parameters->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &frame.MvScaleY);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &frame.PreExposure);
+    if (frame.PreExposure <= 1e-6f)
+        frame.PreExposure = 1.0f;
+    frame.ExposureTexture = exposure;
+    if (parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &frame.GuideWidth) !=
+        NVSDK_NGX_Result_Success)
+        parameters->Get(NVSDK_NGX_Parameter_Width, &frame.GuideWidth);
+    if (parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &frame.GuideHeight) !=
+        NVSDK_NGX_Result_Success)
+        parameters->Get(NVSDK_NGX_Parameter_Height, &frame.GuideHeight);
+    if (beforeUpscale)
+    {
+        frame.Width = frame.GuideWidth;
+        frame.Height = frame.GuideHeight;
+    }
+
+    return {
+        [=, &shader](ID3D12Resource* nextOutput) -> ID3D12Resource*
+        {
+            if (!supportedSubrects || !Config::Instance()->DlssNrEnabled.value_or_default() || !shader.IsInit() ||
+                depth == nullptr || motion == nullptr || nextOutput == nullptr)
+                return nullptr;
+            if (beforeUpscale)
+                return color;
+            if (!shader.CreateBufferResource(device, nextOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+                return nullptr;
+            shader.SetBufferState(commandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            return shader.Buffer();
+        },
+        [=, &shader](ID3D12Resource* input, ID3D12Resource* output) -> bool
+        {
+            // Every guide is returned to the upscaler's input state, including failed NR evaluations.
+            struct RestoreInputs
+            {
+                ID3D12GraphicsCommandList* commandList;
+                std::vector<std::pair<ID3D12Resource*, D3D12_RESOURCE_STATES>> resources;
+                void Read(ID3D12Resource* resource, D3D12_RESOURCE_STATES state)
+                {
+                    if (resource == nullptr ||
+                        std::any_of(resources.begin(), resources.end(),
+                                    [resource](const auto& entry) { return entry.first == resource; }))
+                        return;
+                    resources.emplace_back(resource, state);
+                    NrBarrier(commandList, resource, state, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                }
+                ~RestoreInputs()
+                {
+                    for (auto it = resources.rbegin(); it != resources.rend(); ++it)
+                        NrBarrier(commandList, it->first, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, it->second);
+                }
+            } restore { commandList };
+
+            if (beforeUpscale)
+            {
+                restore.Read(input, states.color);
+                shader.SetBufferState(commandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            }
+            else
+                shader.SetBufferState(commandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            restore.Read(depth, states.depth);
+            restore.Read(motion, states.motion);
+            restore.Read(exposure, states.exposure);
+
+            const bool result = shader.Dispatch(commandList, input, depth, motion, output, frame, timingQueue);
+            if (beforeUpscale)
+            {
+                shader.SetBufferState(commandList, states.color);
+                return result;
+            }
+            if (!result)
+            {
+                // A disabled/failed optional pass must still provide the next stage with the original frame.
+                shader.SetBufferState(commandList, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                NrBarrier(commandList, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+                commandList->CopyResource(output, input);
+                NrBarrier(commandList, output, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            }
+            return true;
+        }
+    };
+}
+
+ID3D12Resource* PrepareDlssNrInput(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12GraphicsCommandList* commandList,
+                                   NVSDK_NGX_Parameter* parameters, unsigned int featureFlags,
+                                   ID3D12CommandQueue* timingQueue, bool interop)
+{
+    auto* color = NrResource(parameters, NVSDK_NGX_Parameter_Color, "DLSSD.Color");
+    if (color == nullptr || !shader.IsInit() || !HasSupportedNrSubrects(parameters) ||
+        !Config::Instance()->DlssNrEnabled.value_or_default())
+        return nullptr;
+    const auto desc = color->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1 ||
+        desc.DepthOrArraySize != 1 || desc.MipLevels != 1 ||
+        !shader.CreateBufferResource(device, color, D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+        return nullptr;
+
+    ShaderPipeline_Dx12 pipeline;
+    pipeline.push_back(
+        MakeDlssNrPass(shader, device, commandList, parameters, true, featureFlags, timingQueue, interop));
+    SetupShaderPipeline(pipeline, shader.Buffer());
+    if (pipeline.front().inputBuffer != nullptr && DispatchShaderPipeline(pipeline))
+        return shader.Buffer();
+    return nullptr;
+}
 
 void IFeature_Dx12::ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
                                     D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState) const
@@ -38,6 +225,7 @@ bool IFeature_Dx12::Init(ID3D12Device* InDevice, ID3D12GraphicsCommandList* InCo
         RCAS = std::make_unique<RCAS_Dx12>("RCAS", InDevice);
         Bias = std::make_unique<Bias_Dx12>("Bias", InDevice); // TODO: not needed on DLSS/DLSSD
         Magnifier = std::make_unique<Magnifier_Dx12>("Magnifier", InDevice);
+        NeuralRendering = std::make_unique<DlssNr_Dx12>("Neural Rendering", InDevice);
 
         UpscalerTime = std::make_unique<GpuTime_Dx12>(InDevice);
     }
@@ -48,6 +236,9 @@ bool IFeature_Dx12::Init(ID3D12Device* InDevice, ID3D12GraphicsCommandList* InCo
 bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters,
                              ID3D12CommandQueue* timingQueue)
 {
+    const bool interop = timingQueue != nullptr;
+    if (timingQueue == nullptr)
+        timingQueue = State::Instance().currentCommandQueue;
     if (!IsInited())
     {
         LOG_ERROR("Not inited!");
@@ -89,28 +280,18 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
     if (!OutputScaler->IsInit())
         useOutputScaling = false;
 
-    ID3D12Resource* paramOutput = nullptr;
-    ID3D12Resource* paramMotion = nullptr;
-    ID3D12Resource* paramDepth = nullptr;
+    auto* paramOutput = GetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Output);
+    auto* paramMotion = GetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_MotionVectors);
+    auto* paramDepth = GetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Depth);
 
-    InParameters->Get(NVSDK_NGX_Parameter_Output, &paramOutput);
-    InParameters->Get(NVSDK_NGX_Parameter_MotionVectors, &paramMotion);
-    InParameters->Get(NVSDK_NGX_Parameter_Depth, &paramDepth);
-
-    // Every exit must return the game's output pointer, including failed upscales and shader passes.
-    struct RestoreOutput
-    {
-        NVSDK_NGX_Parameter* params;
-        ID3D12Resource* output;
-        ~RestoreOutput() { params->Set(NVSDK_NGX_Parameter_Output, output); }
-    } restoreOutput { InParameters, paramOutput };
+    RestoreUpscalerResources_Dx12 restoreResources(InParameters);
 
     // Ray reconstruction consumes noisy lighting inputs; its reconstructed result is the NR input.
     const bool nrBeforeUpscale =
         Config::Instance()->DlssNrBeforeUpscale.value_or_default() && upscaler != Upscaler::DLSSD;
 
     // Order is important as that's the order of shader dispatch
-    std::vector<ShaderPass> pipeline;
+    ShaderPipeline_Dx12 pipeline;
 
     if (useOutputScaling)
     {
@@ -212,13 +393,8 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
 
     if (!nrBeforeUpscale && Config::Instance()->DlssNrEnabled.value_or_default())
     {
-        pipeline.push_back({ // NR composes in place after scaling/sharpening, before the magnifier and overlay.
-                             [](ID3D12Resource* nextOutput) { return nextOutput; },
-                             [&](ID3D12Resource* input, ID3D12Resource* output) -> bool
-                             {
-                                 DlssNr::EvaluateAfterUpscale(InCommandList, InParameters, timingQueue, output);
-                                 return true;
-                             } });
+        pipeline.push_back(MakeDlssNrPass(*NeuralRendering, Device, InCommandList, InParameters, false,
+                                          GetFeatureFlags(), timingQueue, interop));
     }
 
     if (Magnifier->ShouldRun())
@@ -248,44 +424,27 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
               } });
     }
 
-    // Iterate BACKWARDS to establish where each shader needs to pull its input from
-    ID3D12Resource* currentTarget = paramOutput;
-    for (auto it = pipeline.rbegin(); it != pipeline.rend(); ++it)
-    {
-        ID3D12Resource* requiredInput = it->Setup(currentTarget);
-        if (requiredInput)
-        {
-            it->outputBuffer = currentTarget;
-            it->inputBuffer = requiredInput;
-            currentTarget = requiredInput; // Shift the target back for the next previous stage
-        }
-    }
-
     // Upscaler will write to the first active shader, or just output
+    auto* currentTarget = SetupShaderPipeline(pipeline, paramOutput);
     InParameters->Set(NVSDK_NGX_Parameter_Output, currentTarget);
 
-    bool evalResult;
+    auto* originalColor = GetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Color);
+    if (nrBeforeUpscale)
     {
-        DlssNr::ScopedUpscaleInput nrInput(InCommandList, InParameters, nrBeforeUpscale, timingQueue);
-        UpscalerTime->Start(InCommandList);
-        evalResult = EvaluateInternal(InCommandList, InParameters);
-        UpscalerTime->End(InCommandList);
+        if (auto* nrInput = PrepareDlssNrInput(*NeuralRendering, Device, InCommandList, InParameters, GetFeatureFlags(),
+                                               timingQueue, interop))
+            InParameters->Set(NVSDK_NGX_Parameter_Color, nrInput);
     }
+    UpscalerTime->Start(InCommandList);
+    const bool evalResult = EvaluateInternal(InCommandList, InParameters);
+    UpscalerTime->End(InCommandList);
+    InParameters->Set(NVSDK_NGX_Parameter_Color, originalColor);
 
     if (!evalResult)
         return false;
 
-    // Iterate FORWARDS to execute the shaders in the defined order
-    for (auto& pass : pipeline)
-    {
-        if (pass.inputBuffer && pass.outputBuffer)
-        {
-            if (!pass.Dispatch(pass.inputBuffer, pass.outputBuffer))
-            {
-                return true;
-            }
-        }
-    }
+    if (!DispatchShaderPipeline(pipeline))
+        return true;
 
     // imgui
     if (!Config::Instance()->OverlayMenu.value_or_default() && _frameCount > 30)
@@ -353,4 +512,5 @@ IFeature_Dx12::~IFeature_Dx12()
     OutputScaler.reset();
     RCAS.reset();
     Bias.reset();
+    NeuralRendering.reset();
 }

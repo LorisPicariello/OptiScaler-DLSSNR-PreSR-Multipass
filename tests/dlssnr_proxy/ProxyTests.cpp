@@ -1,15 +1,19 @@
 // Compile the production backend with mock NGX entry points and the real SDK parameter interface.
 #include "../../OptiScaler/dlssnr/DlssNr_Proxy.cpp"
+#include "../../OptiScaler/dlssnr/DlssNr_Status.cpp"
+#include "../../OptiScaler/upscalers/ShaderPipeline_Dx12.h"
 
 int main()
 {
+    DlssNr::Proxy::Context proxy;
     ID3D12Device device;
     ID3D12GraphicsCommandList commands;
     ID3D12Resource color, depth, motion, output;
     bool evaluated = true;
-    auto run = [&] {
-        return DlssNr::Proxy::Run(&commands, &device, &color, &depth, &motion, &output,
-                                  1920, 1080, 1280, 720, true, false, 0.5f, -0.25f, &evaluated);
+    auto run = [&]
+    {
+        return proxy.Run(&commands, &device, &color, &depth, &motion, &output, 1920, 1080, 1280, 720, true, false, 0.5f,
+                         -0.25f, &evaluated);
     };
     auto value = []<typename T>(const char* key) {
         T result {};
@@ -48,20 +52,112 @@ int main()
     assert(run() == (unsigned int) Mock::evaluateResult && !evaluated);
     auto evaluationsBefore = Mock::evaluations;
     assert(run() == 0 && !evaluated && Mock::evaluations == evaluationsBefore);
-    DlssNr::Proxy::RetryAfterFailure();
+    proxy.RetryAfterFailure();
     Mock::evaluateResult = NVSDK_NGX_Result_Success;
     Mock::createResult = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
     assert(run() == (unsigned int) Mock::createResult && !evaluated);
     auto creationsBefore = Mock::creations;
     assert(run() == 0 && Mock::creations == creationsBefore);
-    DlssNr::Proxy::RetryAfterFailure();
+    proxy.RetryAfterFailure();
     Mock::createResult = NVSDK_NGX_Result_Success;
     assert(run() == NVSDK_NGX_Result_Success && !evaluated);
     assert(run() == NVSDK_NGX_Result_Success && evaluated);
 
-    DlssNr::Proxy::Release();
+    proxy.Release();
     assert(Mock::handles.empty());
     assert(Mock::allocations == Mock::destructions);
-    DlssNr::Proxy::Release(); // Idempotent shutdown.
+    proxy.Release(); // Idempotent shutdown.
     assert(Mock::allocations == Mock::destructions);
+
+    // Alternating upscalers own independent features, parameter maps, failure latches and teardown.
+    {
+        DlssNr::Proxy::Context other;
+        assert(run() == NVSDK_NGX_Result_Success && !evaluated);
+        auto* firstParams = Mock::latest;
+        auto runOther = [&]
+        {
+            return other.Run(&commands, &device, &color, &depth, &motion, &output, 1280, 720, 1280, 720, false, false,
+                             1.0f, 1.0f, &evaluated);
+        };
+        assert(runOther() == NVSDK_NGX_Result_Success && !evaluated);
+        auto* secondParams = Mock::latest;
+        assert(firstParams != secondParams && Mock::handles.size() == 2);
+        auto creations = Mock::creations;
+        assert(run() == NVSDK_NGX_Result_Success && evaluated);
+        assert(runOther() == NVSDK_NGX_Result_Success && evaluated);
+        assert(Mock::creations == creations);
+        Mock::evaluateResult = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
+        assert(run() == (unsigned int) Mock::evaluateResult && !evaluated);
+        Mock::evaluateResult = NVSDK_NGX_Result_Success;
+        assert(runOther() == NVSDK_NGX_Result_Success && evaluated);
+        proxy.Release();
+        assert(Mock::handles.size() == 1);
+        assert(runOther() == NVSDK_NGX_Result_Success && evaluated);
+    }
+    assert(Mock::handles.empty() && Mock::allocations == Mock::destructions);
+
+    // Clearing an older owner must not erase the current shader's menu snapshot.
+    DlssNr::StatusSnapshot status;
+    status.running = true;
+    status.frames = 5;
+    DlssNr::PublishStatus(&color, DlssNr::Backend::Dx12, status);
+    DlssNr::PublishStatus(&output, DlssNr::Backend::Dx12, status);
+    DlssNr::ClearStatus(&color);
+    assert(DlssNr::IsRunning());
+    DlssNr::ClearStatus(&output);
+    assert(!DlssNr::IsRunning());
+    const auto requestsBefore = DlssNr::ReadControlRequests();
+    DlssNr::RetryAfterFailure();
+    DlssNr::RequestCapture(8);
+    const auto requestsAfter = DlssNr::ReadControlRequests();
+    assert(requestsAfter.retryGeneration == requestsBefore.retryGeneration + 1);
+    assert(requestsAfter.captureGeneration == requestsBefore.captureGeneration + 1);
+    assert(requestsAfter.captureFrames == 8);
+
+    // The shared runner routes resources backwards, then executes stages forwards.
+    ID3D12Resource intermediate;
+    std::string order;
+    ShaderPipeline_Dx12 pipeline { { [&](ID3D12Resource* target)
+                                     {
+                                         assert(target == &intermediate);
+                                         order += 'a';
+                                         return &color;
+                                     },
+                                     [&](ID3D12Resource* input, ID3D12Resource* target)
+                                     {
+                                         assert(input == &color && target == &intermediate);
+                                         order += 'A';
+                                         return true;
+                                     } },
+                                   { [&](ID3D12Resource* target)
+                                     {
+                                         assert(target == &output);
+                                         order += 'b';
+                                         return &intermediate;
+                                     },
+                                     [&](ID3D12Resource* input, ID3D12Resource* target)
+                                     {
+                                         assert(input == &intermediate && target == &output);
+                                         order += 'B';
+                                         return false;
+                                     } } };
+    assert(SetupShaderPipeline(pipeline, &output) == &color);
+    assert(!DispatchShaderPipeline(pipeline));
+    assert(order == "baAB");
+
+    // Bridge parameter maps may store void*; restoration preserves both pointer and SDK type.
+    Mock::Params parameters;
+    parameters.Set(NVSDK_NGX_Parameter_Color, static_cast<void*>(&color));
+    parameters.Set(NVSDK_NGX_Parameter_Output, &output);
+    {
+        RestoreUpscalerResources_Dx12 restore(&parameters);
+        parameters.Set(NVSDK_NGX_Parameter_Color, &intermediate);
+        parameters.Set(NVSDK_NGX_Parameter_Output, &intermediate);
+        assert(!DispatchShaderPipeline(pipeline));
+    }
+    void* restoredColor = nullptr;
+    ID3D12Resource* restoredOutput = nullptr;
+    assert(parameters.Get(NVSDK_NGX_Parameter_Color, &restoredColor) == NVSDK_NGX_Result_Success);
+    assert(parameters.Get(NVSDK_NGX_Parameter_Output, &restoredOutput) == NVSDK_NGX_Result_Success);
+    assert(restoredColor == &color && restoredOutput == &output);
 }

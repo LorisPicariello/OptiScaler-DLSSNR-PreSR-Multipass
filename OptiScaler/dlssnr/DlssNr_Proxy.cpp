@@ -49,15 +49,11 @@ struct ProxyState
     bool reset = true;
 };
 
-ProxyState g_proxy;
-
 struct RetiredState
 {
     ProxyState state;
     unsigned int framesLeft = 32;
 };
-
-std::vector<RetiredState> g_retired;
 
 void DestroyState(ProxyState& state)
 {
@@ -68,31 +64,6 @@ void DestroyState(ProxyState& state)
         NVNGXProxy::D3D12_DestroyParameters()(state.params);
 
     state = {};
-}
-
-void RetireState()
-{
-    if (g_proxy.feature != nullptr || g_proxy.params != nullptr)
-        g_retired.push_back({ g_proxy });
-
-    g_proxy = {};
-}
-
-void TickRetired()
-{
-    // Match the existing DLSS-NR resource retirement window. Feature creation/evaluation
-    // records GPU work, so replacing a feature must not destroy it on that same frame.
-    for (size_t i = 0; i < g_retired.size();)
-    {
-        if (--g_retired[i].framesLeft > 0)
-        {
-            ++i;
-            continue;
-        }
-
-        DestroyState(g_retired[i].state);
-        g_retired.erase(g_retired.begin() + i);
-    }
 }
 
 // Everything the model reads when the feature is built.
@@ -129,41 +100,80 @@ namespace DlssNr
 {
 namespace Proxy
 {
-bool Available()
+struct Context::Impl
+{
+    ProxyState state;
+    std::vector<RetiredState> retiredStates;
+    void RetireState();
+    void TickRetired();
+    void Release();
+    unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color,
+                     ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output, unsigned int width,
+                     unsigned int height, unsigned int guideWidth, unsigned int guideHeight, bool depthInverted,
+                     bool reset, float mvScaleX, float mvScaleY, bool* evaluated);
+};
+
+void Context::Impl::RetireState()
+{
+    if (state.feature != nullptr || state.params != nullptr)
+        retiredStates.push_back({ state });
+
+    state = {};
+}
+
+void Context::Impl::TickRetired()
+{
+    // Match the existing DLSS-NR resource retirement window. Feature creation/evaluation
+    // records GPU work, so replacing a feature must not destroy it on that same frame.
+    for (size_t i = 0; i < retiredStates.size();)
+    {
+        if (--retiredStates[i].framesLeft > 0)
+        {
+            ++i;
+            continue;
+        }
+
+        DestroyState(retiredStates[i].state);
+        retiredStates.erase(retiredStates.begin() + i);
+    }
+}
+
+bool Context::Available()
 {
     return NVNGXProxy::IsDx12Inited() && NVNGXProxy::D3D12_GetCapabilityParameters() != nullptr &&
            NVNGXProxy::D3D12_DestroyParameters() != nullptr && NVNGXProxy::D3D12_ReleaseFeature() != nullptr &&
            NVNGXProxy::D3D12_CreateFeature() != nullptr && NVNGXProxy::D3D12_EvaluateFeature() != nullptr;
 }
 
-void Release()
+void Context::Impl::Release()
 {
-    DestroyState(g_proxy);
+    DestroyState(state);
 
-    for (auto& retired : g_retired)
+    for (auto& retired : retiredStates)
         DestroyState(retired.state);
 
-    g_retired.clear();
+    retiredStates.clear();
 }
 
-void RetryAfterFailure() { RetireState(); }
+void Context::RetryAfterFailure() { _impl->RetireState(); }
 
-unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color, ID3D12Resource* depth,
-                 ID3D12Resource* motion, ID3D12Resource* output, unsigned int width, unsigned int height,
-                 unsigned int guideWidth, unsigned int guideHeight, bool depthInverted, bool reset, float mvScaleX,
-                 float mvScaleY, bool* evaluated)
+unsigned int Context::Impl::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color,
+                                ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output,
+                                unsigned int width, unsigned int height, unsigned int guideWidth,
+                                unsigned int guideHeight, bool depthInverted, bool reset, float mvScaleX,
+                                float mvScaleY, bool* evaluated)
 {
     if (evaluated != nullptr)
         *evaluated = false;
 
-    if (g_proxy.failed || cmdList == nullptr || device == nullptr || color == nullptr || depth == nullptr ||
+    if (state.failed || cmdList == nullptr || device == nullptr || color == nullptr || depth == nullptr ||
         motion == nullptr || output == nullptr || width == 0 || height == 0 || guideWidth == 0 || guideHeight == 0)
         return 0;
 
     if (!NVNGXProxy::IsDx12Inited() && !NVNGXProxy::InitDx12(device))
         return 0;
 
-    if (!Available())
+    if (!Context::Available())
         return 0;
 
     TickRetired();
@@ -171,42 +181,42 @@ unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D1
     const Config& cfg = *Config::Instance();
     const auto settings = ReadSettings(cfg, width, height);
 
-    if (g_proxy.feature != nullptr && (g_proxy.settings != settings || g_proxy.device != device))
+    if (state.feature != nullptr && (state.settings != settings || state.device != device))
         RetireState();
 
-    if (g_proxy.params == nullptr)
+    if (state.params == nullptr)
     {
         // A dedicated parameter map populated with NGX capabilities. Unlike the deprecated
         // GetParameters API, GetCapabilityParameters transfers ownership to the caller.
-        const auto allocated = NVNGXProxy::D3D12_GetCapabilityParameters()(&g_proxy.params);
-        if (allocated != NVSDK_NGX_Result_Success || g_proxy.params == nullptr)
+        const auto allocated = NVNGXProxy::D3D12_GetCapabilityParameters()(&state.params);
+        if (allocated != NVSDK_NGX_Result_Success || state.params == nullptr)
         {
-            DestroyState(g_proxy);
-            g_proxy.failed = true;
+            DestroyState(state);
+            state.failed = true;
             LOG_ERROR("DLSS-NR (proxy): the NGX core refused its capability parameters");
             return (unsigned int) (allocated == NVSDK_NGX_Result_Success ? NVSDK_NGX_Result_Fail : allocated);
         }
     }
 
-    if (g_proxy.feature == nullptr)
+    if (state.feature == nullptr)
     {
-        SetCreationParameters(g_proxy.params, cfg, width, height);
+        SetCreationParameters(state.params, cfg, width, height);
 
         const auto created =
-            NVNGXProxy::D3D12_CreateFeature()(cmdList, (NVSDK_NGX_Feature) 18, g_proxy.params, &g_proxy.feature);
+            NVNGXProxy::D3D12_CreateFeature()(cmdList, (NVSDK_NGX_Feature) 18, state.params, &state.feature);
 
-        if (created != NVSDK_NGX_Result_Success || g_proxy.feature == nullptr)
+        if (created != NVSDK_NGX_Result_Success || state.feature == nullptr)
         {
             RetireState();
-            g_proxy.failed = true;
+            state.failed = true;
             LOG_ERROR("DLSS-NR (proxy): CreateFeature(18) failed 0x{:X} -- falling back is the "
                       "caller's decision",
                       (unsigned int) created);
             return (unsigned int) (created == NVSDK_NGX_Result_Success ? NVSDK_NGX_Result_Fail : created);
         }
 
-        g_proxy.settings = settings;
-        g_proxy.device = device;
+        state.settings = settings;
+        state.device = device;
         LOG_INFO("DLSS-NR (proxy): feature created at {}x{} through the driver's nvngx -- no "
                  "forwarder in this path",
                  width, height);
@@ -215,7 +225,7 @@ unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D1
         return (unsigned int) NVSDK_NGX_Result_Success;
     }
 
-    NVSDK_NGX_Parameter* params = g_proxy.params;
+    NVSDK_NGX_Parameter* params = state.params;
 
     SetResource(params, "DLSSNR.Color", color);
     SetResource(params, "DLSSNR.Depth", depth);
@@ -226,7 +236,7 @@ unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D1
     SetUInt(params, "DLSSNR.Width", width);
     SetUInt(params, "DLSSNR.Height", height);
     SetUInt(params, "DLSSNR.DepthInverted", depthInverted ? 1u : 0u);
-    SetUInt(params, "DLSSNR.Reset", (reset || g_proxy.reset) ? 1u : 0u);
+    SetUInt(params, "DLSSNR.Reset", (reset || state.reset) ? 1u : 0u);
 
     // Colour and output are display resolution; depth and motion come from the game's own DLSS
     // evaluation and may be render resolution, so each resource carries its own subrect.
@@ -260,21 +270,32 @@ unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D1
     SetFloat(params, "DLSSNR.SkinStructureStrength", cfg.DlssNrSkinStructure.value_or_default());
     SetUInt(params, "DLSSNR.UseAutoMask", cfg.DlssNrAutoMask.value_or_default() ? 1u : 0u);
 
-    const auto result =
-        NVNGXProxy::D3D12_EvaluateFeature()(cmdList, g_proxy.feature, params, nullptr);
+    const auto result = NVNGXProxy::D3D12_EvaluateFeature()(cmdList, state.feature, params, nullptr);
 
     if (result == NVSDK_NGX_Result_Success)
     {
-        g_proxy.reset = false;
+        state.reset = false;
         if (evaluated != nullptr)
             *evaluated = true;
     }
     else
     {
-        g_proxy.failed = true;
+        state.failed = true;
     }
 
     return (unsigned int) result;
+}
+Context::Context() : _impl(std::make_unique<Impl>()) {}
+Context::~Context() { _impl->Release(); }
+void Context::Release() { _impl->Release(); }
+
+unsigned int Context::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color,
+                          ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output, unsigned int width,
+                          unsigned int height, unsigned int guideWidth, unsigned int guideHeight, bool depthInverted,
+                          bool reset, float mvScaleX, float mvScaleY, bool* evaluated)
+{
+    return _impl->Run(cmdList, device, color, depth, motion, output, width, height, guideWidth, guideHeight,
+                      depthInverted, reset, mvScaleX, mvScaleY, evaluated);
 }
 } // namespace Proxy
 } // namespace DlssNr

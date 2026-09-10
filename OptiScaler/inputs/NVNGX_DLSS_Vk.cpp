@@ -1,5 +1,4 @@
 #include "pch.h"
-#include <dlssnr/DlssNrFeature_Vk.h>
 #include "Util.h"
 #include "Config.h"
 #include "resource.h"
@@ -1027,12 +1026,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
             auto result = NVNGXProxy::VULKAN_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
             LOG_INFO("VULKAN_EvaluateFeature result for ({0}): {1:X}", handleId, (UINT) result);
 
-            // Neural Rendering over what the upscaler just wrote, on the same command buffer -- the
-            // same placement as the D3D12 path, so frame generation interpolates from enhanced frames
-            // and the model still costs one run per rendered frame.
-            if (result == NVSDK_NGX_Result_Success)
-                DlssNr::EvaluateAfterUpscaleVk(InCmdList, InParameters, vkInstance, vkPD, vkDevice);
-
+            // SR and RR always use IFeature_Vk, whose common shader pipeline owns NR.
+            // Other native feature IDs (including frame generation) must not run it.
             return result;
         }
         else
@@ -1088,26 +1083,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
 
     UpscalerTimeVk::UpscaleEnd(InCmdList);
 
-    // Same pass, for OptiScaler's own upscalers rather than native DLSS. Natively on Vulkan now: the
-    // model exports a complete Vulkan surface and OptiScaler's vkCreateDevice hook already adds the
-    // two NVX extensions NGX needs, so there is nothing left for the D3D12 bridge to do here.
-    //
-    // Except when the upscaler itself is bridged. A backend ending in _on12 does its work on a D3D12
-    // device and IFeature_VkwDx12 already runs the model there, on the D3D12 command list, over the
-    // D3D12 copies of these surfaces. Running it here as well would evaluate the model twice per
-    // frame -- once on each side of the bridge -- at double the cost, with the second pass composing
-    // over a frame the first had already edited.
-    //
-    // Asked of the live feature rather than of the config: the config is what was requested and the
-    // feature is what is actually running, and they differ for a frame after any backend change and
-    // permanently after a fallback.
-    const auto backend = deviceContext != nullptr ? deviceContext->GetUpscalerType() : Upscaler::FSR22;
-    const bool bridged = backend == Upscaler::XeSS_on12 || backend == Upscaler::FSR21_on12 ||
-                         backend == Upscaler::FSR22_on12 || backend == Upscaler::FFX_on12;
-
-    if (upscaleResult && !bridged)
-        DlssNr::EvaluateAfterUpscaleVk(InCmdList, InParameters, vkInstance, vkPD, vkDevice);
-
     return upscaleResult ? NVSDK_NGX_Result_Success : NVSDK_NGX_Result_Fail;
 }
 
@@ -1115,12 +1090,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_Shutdown(void)
 {
     shutdown = true;
 
-    // for (auto const& [key, val] : VkContexts) {
-    //     if (val.feature)
-    //         NVSDK_NGX_VULKAN_ReleaseFeature(val.feature->Handle());
-    // }
-
-    // VkContexts.clear();
+    // Release feature-owned shaders/model resources while the Vulkan device and NGX are alive.
+    if (vkDevice != VK_NULL_HANDLE)
+        vkDeviceWaitIdle(vkDevice);
+    State::Instance().currentFeature = nullptr;
+    VkContexts.clear();
 
     vkInstance = nullptr;
     vkPD = nullptr;
@@ -1150,6 +1124,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_Shutdown(void)
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_Shutdown1(VkDevice InDevice)
 {
     shutdown = true;
+
+    if (InDevice != VK_NULL_HANDLE)
+        vkDeviceWaitIdle(InDevice);
+    State::Instance().currentFeature = nullptr;
+    VkContexts.clear();
 
     if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsVulkanInited() &&
         NVNGXProxy::VULKAN_Shutdown1() != nullptr)

@@ -1,5 +1,4 @@
 #include "pch.h"
-#include "DlssNrFeature_Vk.h"
 
 #include "DlssNr.h"
 
@@ -100,7 +99,7 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrBeforeUpscale = beforeUpscale;
         HelpMarker("Runs Neural Rendering at the input resolution before super resolution."
                    "\nThe default runs it after upscaling."
-                   "\nNative Vulkan and Ray Reconstruction continue to run after upscaling.");
+                   "\nRay Reconstruction continues to run after upscaling.");
 
         bool useProxy = config->DlssNrUseProxy.value_or_default();
         if (ImGui::Checkbox("Use driver NGX (experimental)", &useProxy))
@@ -116,6 +115,8 @@ void RenderMenu(Config* config, float menuResScale)
         if (!DlssNr::IsRunning() && !vulkan)
         {
             const char* reason = DlssNr::FailureReason();
+            if (reason[0] == 0)
+                reason = DlssNr::FailureReasonVk();
 
             if (reason[0] != 0)
             {

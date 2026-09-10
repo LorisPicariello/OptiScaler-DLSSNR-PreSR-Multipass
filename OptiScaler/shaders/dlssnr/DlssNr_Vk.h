@@ -25,6 +25,20 @@
 #include "SysUtils.h"
 #include <shaders/Shader_Vk.h>
 #include "DlssNr_Common.h"
+#include <memory>
+
+namespace DlssNr
+{
+class ModelVk;
+}
+
+// NGX's Vulkan guide wrappers also state whether the image supports storage access.
+// Keep that metadata alongside the shared frame properties when rebuilding explicit resources.
+struct DlssNrFrameInfo_Vk : DlssNrFrameInfo
+{
+    bool DepthReadWrite = false;
+    bool MotionReadWrite = false;
+};
 
 class DlssNr_Vk : public Shader_Vk
 {
@@ -34,8 +48,11 @@ class DlssNr_Vk : public Shader_Vk
     static constexpr uint32_t kFramesInFlight = 3;
     static constexpr uint32_t kSlots = kSlotsPerFrame * kFramesInFlight;
 
-    VkDeviceSize _slotStride = 0;   // sizeof(DlssNrConstants), rounded up to the device's alignment
-    uint32_t _slot = 0;             // next slot to hand out, wrapping
+    std::unique_ptr<DlssNr::ModelVk> _model;
+    VkImageLayout _intermediateLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkDeviceSize _slotStride = 0; // sizeof(DlssNrConstants), rounded up to the device's alignment
+    uint32_t _slot = 0;           // next slot to hand out, wrapping
 
     // Stands in for a resource a given mode does not read. One pixel, never sampled for its content,
     // present only because Vulkan will not accept an unwritten binding.
@@ -52,6 +69,16 @@ class DlssNr_Vk : public Shader_Vk
   public:
     DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalDevice);
     ~DlssNr_Vk();
+
+    VkImageInfo PrepareInput(VkCommandBuffer cmd, const VkImageInfo& nextOutput);
+    void SetImageLayout(VkCommandBuffer cmd, VkImage image, VkImageLayout before, VkImageLayout after,
+                        VkImageSubresourceRange range)
+    {
+        Shader_Vk::SetImageLayout(cmd, image, before, after, range);
+    }
+    bool Dispatch(VkCommandBuffer cmd, const VkImageInfo& colour, const VkImageInfo& depth, const VkImageInfo& motion,
+                  const VkImageInfo& output, const DlssNrFrameInfo_Vk& frame, VkInstance instance,
+                  VkImageLayout inputLayout = VK_IMAGE_LAYOUT_GENERAL);
 
     // One dispatch of the composition shader.
     //

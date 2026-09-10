@@ -5,7 +5,6 @@
 #include "NVNGX_DLSS.h"
 #include "NVNGX_Parameter.h"
 #include "proxies/NVNGX_Proxy.h"
-#include "dlssnr/DlssNr.h"
 #include <upscalers/dlss/DLSSFeature_Dx12.h>
 #include <shaders/output_scaling/OS_Dx12.h>
 
@@ -374,14 +373,16 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
     shutdown = true;
     State::Instance().nvngxDx12Inited = false;
 
-    D3D12Device = nullptr;
-
     State::Instance().currentFeature = nullptr;
+    // Retire owned NR models before shutting down the NGX device they were created on.
+    Dx12Contexts.clear();
+    HandleToFeature.clear();
 
     // Unhooking and cleaning stuff causing issues during shutdown.
     // Disabled for now to check if it cause any issues
     // UnhookAll();
     DLSSFeatureDx12::Shutdown(D3D12Device);
+    D3D12Device = nullptr;
 
     // Added `&& !State::Instance().isShuttingDown` hack for crash on exit
     if (Config::Instance()->DLSSEnabled.value_or_default() && NVNGXProxy::IsDx12Inited() &&
@@ -422,6 +423,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown1(ID3D12Device* InDevice)
 {
     shutdown = true;
     State::Instance().nvngxDx12Inited = false;
+    State::Instance().currentFeature = nullptr;
+    Dx12Contexts.clear();
+    HandleToFeature.clear();
 
     if (State::Instance().activeFgNvngx != FGNvngxReplacement::None)
     {
@@ -818,6 +822,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
         return NVSDK_NGX_Result_Success;
 
     auto handleId = InHandle->Id;
+    HandleToFeature.erase(handleId);
 
     // Clean up framegen
     if (State::Instance().currentFG != nullptr && State::Instance().activeFgInput == FGInput::Upscaler)
@@ -1149,23 +1154,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
         {
             LOG_DEBUG("Passthrough to native DLSS EvaluateFeature for handle {}", handleId);
 
-            const bool isUpscaler =
-                feature == NVSDK_NGX_Feature_SuperSampling || feature == NVSDK_NGX_Feature_RayReconstruction;
-            const bool nrBeforeUpscale =
-                cfg.DlssNrBeforeUpscale.value_or_default() && feature == NVSDK_NGX_Feature_SuperSampling;
-            NVSDK_NGX_Result result;
-            {
-                DlssNr::ScopedUpscaleInput nrInput(InCmdList, InParameters, nrBeforeUpscale);
-                result = NVNGXProxy::D3D12_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
-            }
-            LOG_DEBUG("Native DLSS EvaluateFeature result: 0x{:X}", (uint32_t) result);
-
-            // Native passthrough has no IFeature_Dx12 pipeline. Only SR/RR handles receive NR;
-            // frame generation and other NGX features must never evaluate the model again.
-            if (result == NVSDK_NGX_Result_Success && isUpscaler && !nrBeforeUpscale)
-                DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
-
-            return result;
+            // SR and RR handles are always IFeature_Dx12 instances. This branch contains only
+            // unrelated native NGX features, which must never run Neural Rendering.
+            return NVNGXProxy::D3D12_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
         }
 
         LOG_DEBUG("Native DLSS EvaluateFeature not available for handle {}", handleId);

@@ -6,9 +6,8 @@
 // the struct rather than redefine it and drift; and the parameter names the model is driven by, which
 // are the model's own and identical whatever API is calling it.
 //
-// The Direct3D 12 side is DlssNr_Dx12, which implements Shader_Dx12 the way RCAS and Output Scaling
-// do. The model itself is separate again: creating and evaluating an NGX feature is not a dispatch,
-// so it does not belong in a shader class.
+// Each API shader owns its model and scratch resources. Shared frame metadata and composition
+// constants let the upscaler pipelines dispatch either backend with the same contract.
 
 #include <Config.h>
 #include <algorithm>
@@ -51,10 +50,16 @@ constexpr uint32_t kDlssNrMeterGrid = 64;
 // choices -- preset, intensity, strengths, paper white -- stay in Config, so a caller placing this
 // pass in a new pipeline does not have to plumb a dozen sliders through it.
 //
-// Sizes are deliberately absent. The output's dimensions come from its own descriptor and the guide
-// sizes from theirs, so there is one less thing for a call site to get wrong.
+// Logical dimensions are explicit because a dynamic-resolution subrect can be smaller than its texture.
 struct DlssNrFrameInfo
 {
+    // Active subrect dimensions; zero uses the resource dimensions.
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+    uint32_t GuideWidth = 0;
+    uint32_t GuideHeight = 0;
+    bool BeforeUpscale = false;
+
     // Which way round depth runs. The game states this when it creates its own upscaler.
     bool DepthInverted = false;
 

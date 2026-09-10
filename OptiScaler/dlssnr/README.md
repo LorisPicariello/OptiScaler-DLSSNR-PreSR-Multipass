@@ -6,15 +6,28 @@ NVIDIA; the model ships in driver packages and is not redistributed here.
 
 ## Pipeline integration
 
-The D3D12 pass implements `Shader_Dx12`, takes its resources on dispatch, and shares frame metadata,
-shader constants and composition settings through `DlssNr_Common.h`. `IFeature_Dx12` dispatches it
-for replacement upscalers, including the D3D11 and Vulkan bridges. Native DLSS passthrough uses the
-same adapters from the input hook.
+`IFeature_Dx12` and `IFeature_Vk` each own a Neural Rendering shader alongside RCAS and output scaling.
+The shaders implement `Shader_Dx12` / `Shader_Vk` and receive explicit colour, depth, motion, output
+and frame metadata. Shared composition constants live in `DlssNr_Common.h`. Model handles, parameter
+maps, scratch resources, history, capture and timing belong to the owning instance.
+
+Both APIs use the same `SetupShaderPipeline` / `DispatchShaderPipeline` pattern before and after the
+upscaler. D3D11-to-D3D12 and Vulkan-to-D3D12 bridges inherit the D3D12 implementation. Native D3D11
+Neural Rendering is not implemented; D3D11 games use the existing interop upscaler.
+
+DLSS SR and RR feature creation already routes through these upscaler classes, including native DLSS
+backends. The input hooks no longer dispatch NR separately. Their unrelated NGX passthrough features
+remain untouched. Releasing an upscaler releases its NR instance; shutdown clears owned contexts
+before the NGX core is shut down.
 
 `[DlssNr] BeforeUpscale=false` keeps the post-upscale placement. Setting it to `true` runs the pass
 on a private copy of the input colour before super resolution; the game's original input and NGX
 colour parameter are restored. Ray Reconstruction continues to run Neural Rendering after the
-upscaler, since its input still needs denoising. Native Vulkan also keeps its post-upscale placement.
+upscaler, since its input still needs denoising. This placement control also applies to native Vulkan.
+Non-zero resource subrect offsets are currently excluded from NR; logical extents must fit the images.
+
+The menu receives value-only status snapshots and issues retry/capture requests. It does not own or
+retain any GPU resources. A failure in one instance does not replace another instance's model state.
 
 `[DlssNr] UseProxy=true` selects the driver's NGX interface on D3D12 paths. This route uses a dedicated
 capability parameter map, the SDK's typed setters, and the same encode/model/resolve stages as the
@@ -37,9 +50,14 @@ msbuild OptiScaler.sln /m /p:Configuration=Release /p:Platform=x64 /p:PostBuildE
 ```
 
 The focused tests compile the production proxy code with a mock NGX backend and the real SDK
-parameter interface. They cover typed parameters, creation/recreation, failure/retry and deferred
-cleanup. They do not validate a real driver's model output or in-game resource states. Feature and
-texture retirement retain the existing 32-evaluate delay; that is not a GPU fence guarantee.
+parameter interface. They cover typed parameters, independent model instances, creation/recreation,
+failure/retry, deferred cleanup, menu-status lifetime, pipeline ordering and bridge parameter
+restoration. They do not validate a real driver's model output or in-game resource states.
+
+D3D12 feature/texture retirement retains the existing 32-evaluate delay; that is not a GPU fence
+guarantee. Vulkan waits for the device before replacing model resources. The forwarder still caches
+its API initialization and function tables at module scope; this refactor does not add multi-device
+support to that helper DLL. Present-time processing and HUD masking remain separate future work.
 
 ## For maintainers: how to remove it
 
@@ -54,9 +72,8 @@ the runtime `Enabled` setting, which is off by default.
 
 | File | Role |
 |---|---|
-| `upscalers/IFeature_Dx12.cpp` | before/after stages for replacement upscalers and D3D12 bridges |
-| `inputs/NVNGX_DLSS_Dx12.cpp` | before/after stages for native DLSS passthrough |
-| `inputs/NVNGX_DLSS_Vk.cpp` | native Vulkan post-upscale pass |
+| `upscalers/IFeature_Dx12.h/.cpp` | owned NR shader and before/after stages, including D3D12 bridges |
+| `upscalers/IFeature_Vk.h/.cpp` | owned NR shader and native Vulkan before/after stages |
 | `menu/menu_common.cpp` | settings panel and cost row |
 | `Config.h` / `Config.cpp` | `[DlssNr]` declarations and configuration read/write |
 
@@ -79,13 +96,16 @@ experiment.
 
 | File | Role |
 |---|---|
-| `DlssNr.h` | umbrella header; documents the call sites |
-| `DlssNrFeature_Dx12.h` | the namespace-level API the menu and the call sites use |
+| `DlssNr.h`, `DlssNr_Status.h/.cpp` | menu controls and value-only status snapshots |
+| `DlssNrFeature_Vk.h/.cpp` | per-instance Vulkan model backend owned by `DlssNr_Vk` |
+| `DlssNrPipeline_Vk.h` | Vulkan resource/frame adapters and scoped parameter restoration |
 | `DlssNr_Menu.cpp` | the settings panel |
 | `DlssNr_Capture.h` | matched before/after frame dumps |
 | `DlssNr_Proxy.h/.cpp` | the experiment in reaching the model through the driver core instead of the forwarder; see `FORWARDER_INVESTIGATION.md` |
 | `forwarder/` | the caller-gate shim, built by `dlssnr_forwarder.vcxproj` into the release layout |
 | `shaders/dlssnr/DlssNr_Dx12.h/.cpp` | the pass: forwarder loading, feature lifetime, the evaluate path, encode/resolve orchestration, capture |
+| `shaders/dlssnr/DlssNr_Vk.h/.cpp` | Vulkan shader, owned intermediate image and model backend |
+| `upscalers/ShaderPipeline_Dx12.h`, `upscalers/ShaderPipeline_Vk.h` | shared setup/dispatch contract used for both placement stages |
 | `shaders/dlssnr/DlssNr_Common.h` | the constant buffer, shared by the host and the shader |
 | `shaders/dlssnr/precompile/dlssnr.hlsl` | **the live shader**: encode (scale and sRGB-encode with a soft knee), area downsample, resolve (RenoDX's two-branch composition, OkLab hue correction, AP1 clamp, the guard) |
 | `shaders/dlssnr/precompile/DlssNr_Shader.h` | that shader compiled, as bytes |
@@ -137,7 +157,7 @@ part of the solution, and builds with everything else.
 - **Never free under the GPU.** Every retired feature or surface is parked and freed 32 evaluates
   later; every internal feature is created on a private queue and fenced before use. Both rules were
   paid for with device hangs.
-- **One lock.** Every caller is on the game's render thread now, but the D3D11-on-D3D12 bridge
+- **Per-instance locking.** Every caller is on the game's render thread now, but the D3D11-on-D3D12 bridge
   enters from its own call site, and the lock is CPU-side on a path that already records command
   lists. It was added after a period of crashes that looked random and were not.
 - **Temporal filtering of the model's answer was measured to be a dead end** (twice, including with

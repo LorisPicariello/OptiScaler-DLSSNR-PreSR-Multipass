@@ -8,6 +8,9 @@
 
 struct ID3D12Device {};
 struct ID3D12GraphicsCommandList {};
+struct ID3D12CommandQueue
+{
+};
 struct ID3D12Resource {};
 
 #define LOG_INFO(...) ((void) 0)
@@ -19,8 +22,9 @@ template <typename T> struct Setting
     T value_or_default() const { return value; }
 };
 
-struct Config
+class Config
 {
+  public:
     Setting<int> DlssNrPreset, DlssNrStyle;
     Setting<float> DlssNrIntensity { 0.5f }, DlssNrLocalStructure { 0.25f },
                    DlssNrLocalTone { 0.75f }, DlssNrSkinStructure { 0.375f };
