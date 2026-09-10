@@ -1149,16 +1149,20 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
         {
             LOG_DEBUG("Passthrough to native DLSS EvaluateFeature for handle {}", handleId);
 
-            NVSDK_NGX_Result result =
-                NVNGXProxy::D3D12_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
+            const bool isUpscaler =
+                feature == NVSDK_NGX_Feature_SuperSampling || feature == NVSDK_NGX_Feature_RayReconstruction;
+            const bool nrBeforeUpscale =
+                cfg.DlssNrBeforeUpscale.value_or_default() && feature == NVSDK_NGX_Feature_SuperSampling;
+            NVSDK_NGX_Result result;
+            {
+                DlssNr::ScopedUpscaleInput nrInput(InCmdList, InParameters, nrBeforeUpscale);
+                result = NVNGXProxy::D3D12_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
+            }
             LOG_DEBUG("Native DLSS EvaluateFeature result: 0x{:X}", (uint32_t) result);
 
-            // Neural Rendering runs over what the upscaler just wrote, on the same list, so frame
-            // generation interpolates from enhanced frames and the model still costs one run per
-            // rendered frame. The feature check is the point: frame generation is handed depth and
-            // motion vectors too, and its handle can reach here because the branch above does not
-            // return, so filtering on the parameter block alone would run the model twice a frame.
-            if (result == NVSDK_NGX_Result_Success && feature != NVSDK_NGX_Feature_FrameGeneration)
+            // Native passthrough has no IFeature_Dx12 pipeline. Only SR/RR handles receive NR;
+            // frame generation and other NGX features must never evaluate the model again.
+            if (result == NVSDK_NGX_Result_Success && isUpscaler && !nrBeforeUpscale)
                 DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
 
             return result;
@@ -1182,13 +1186,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
         InParameters->Set("DLSSG.CameraFar", lastDlssgCameraFar.value());
 
     // OptiScaler internal handling
-    const NVSDK_NGX_Result optiResult = TryEvaluateOptiFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
-
-    // Same pass, for OptiScaler's own upscalers rather than native DLSS.
-    if (optiResult == NVSDK_NGX_Result_Success && feature != NVSDK_NGX_Feature_FrameGeneration)
-        DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
-
-    return optiResult;
+    // NR is dispatched inside IFeature_Dx12, shared by NGX, FSR/XeSS inputs and the API bridges.
+    return TryEvaluateOptiFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
 }
 
 #pragma endregion

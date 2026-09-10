@@ -2355,6 +2355,8 @@ void D3D12Hooks::Unhook()
 
 void D3D12Hooks::SetRootSignatureTracking(bool enable) { isUpscalerActive = !enable; }
 
+bool D3D12Hooks::IsRootSignatureTrackingEnabled() { return !isUpscalerActive; }
+
 bool D3D12Hooks::CanRestoreRootSignature(ID3D12GraphicsCommandList* cmdList)
 {
     std::unique_lock<std::shared_mutex> lock(rootSignatureMutex);

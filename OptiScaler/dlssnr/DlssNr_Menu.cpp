@@ -80,11 +80,11 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::Checkbox("Enable Neural Rendering", &enabled))
             config->DlssNrEnabled = enabled;
 
-        HelpMarker("Synthesises detail in the upscaler's output, before frame generation sees it."
-                       "\n\nNeeds two similarly named files beside OptiScaler, one character apart:"
-                       "\n  nvngx_dlssnr.dll       NVIDIA's model (~165 MB) -- you supply it"
-                       "\n  nvngx.dll_dlssnr.dll   the forwarder (~13 KB) -- ships in this package"
-                       "\nUndocumented and driven directly, so none of this is officially supported.");
+        HelpMarker("Synthesises detail before frame generation sees the frame."
+                   "\n\nNeeds two similarly named files beside OptiScaler, one character apart:"
+                   "\n  nvngx_dlssnr.dll       NVIDIA's model (~165 MB) -- you supply it"
+                   "\n  nvngx.dll_dlssnr.dll   the forwarder (~13 KB) -- ships in this package"
+                   "\nUndocumented and driven directly, so none of this is officially supported.");
 
         // The toggle can be bound to a key, and nobody would think to look for it under Keybinds
         // unless told. Dimmed, because it is a note rather than a setting.
@@ -94,6 +94,24 @@ void RenderMenu(Config* config, float menuResScale)
         // is never touched -- so asking only that one reports "waiting for the upscaler" over a pass
         // that is demonstrably running.
         const bool vulkan = DlssNr::IsRunningVk();
+
+        bool beforeUpscale = config->DlssNrBeforeUpscale.value_or_default();
+        if (ImGui::Checkbox("Run before upscaling", &beforeUpscale))
+            config->DlssNrBeforeUpscale = beforeUpscale;
+        HelpMarker("Runs Neural Rendering at the input resolution before super resolution."
+                   "\nThe default runs it after upscaling."
+                   "\nNative Vulkan and Ray Reconstruction continue to run after upscaling.");
+
+        bool useProxy = config->DlssNrUseProxy.value_or_default();
+        if (ImGui::Checkbox("Use driver NGX (experimental)", &useProxy))
+        {
+            config->DlssNrUseProxy = useProxy;
+            DlssNr::RetryAfterFailure();
+        }
+        HelpMarker("Uses the driver's NVIDIA interface without loading the forwarder on D3D12 paths."
+                   "\nRequires a driver that can create the Neural Rendering feature."
+                   "\nA failure is reported here; there is no automatic fallback."
+                   "\nNative Vulkan continues to use the forwarder.");
 
         if (!DlssNr::IsRunning() && !vulkan)
         {

@@ -5,6 +5,7 @@
 
 #include "IFeature_Dx12.h"
 #include "State.h"
+#include <dlssnr/DlssNr.h>
 
 void IFeature_Dx12::ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
                                     D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState) const
@@ -44,7 +45,8 @@ bool IFeature_Dx12::Init(ID3D12Device* InDevice, ID3D12GraphicsCommandList* InCo
     return result;
 }
 
-bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
+bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters,
+                             ID3D12CommandQueue* timingQueue)
 {
     if (!IsInited())
     {
@@ -94,6 +96,18 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
     InParameters->Get(NVSDK_NGX_Parameter_Output, &paramOutput);
     InParameters->Get(NVSDK_NGX_Parameter_MotionVectors, &paramMotion);
     InParameters->Get(NVSDK_NGX_Parameter_Depth, &paramDepth);
+
+    // Every exit must return the game's output pointer, including failed upscales and shader passes.
+    struct RestoreOutput
+    {
+        NVSDK_NGX_Parameter* params;
+        ID3D12Resource* output;
+        ~RestoreOutput() { params->Set(NVSDK_NGX_Parameter_Output, output); }
+    } restoreOutput { InParameters, paramOutput };
+
+    // Ray reconstruction consumes noisy lighting inputs; its reconstructed result is the NR input.
+    const bool nrBeforeUpscale =
+        Config::Instance()->DlssNrBeforeUpscale.value_or_default() && upscaler != Upscaler::DLSSD;
 
     // Order is important as that's the order of shader dispatch
     std::vector<ShaderPass> pipeline;
@@ -196,6 +210,17 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
               } });
     }
 
+    if (!nrBeforeUpscale && Config::Instance()->DlssNrEnabled.value_or_default())
+    {
+        pipeline.push_back({ // NR composes in place after scaling/sharpening, before the magnifier and overlay.
+                             [](ID3D12Resource* nextOutput) { return nextOutput; },
+                             [&](ID3D12Resource* input, ID3D12Resource* output) -> bool
+                             {
+                                 DlssNr::EvaluateAfterUpscale(InCommandList, InParameters, timingQueue, output);
+                                 return true;
+                             } });
+    }
+
     if (Magnifier->ShouldRun())
     {
         pipeline.push_back(
@@ -239,11 +264,13 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
     // Upscaler will write to the first active shader, or just output
     InParameters->Set(NVSDK_NGX_Parameter_Output, currentTarget);
 
-    UpscalerTime->Start(InCommandList);
-
-    auto evalResult = EvaluateInternal(InCommandList, InParameters);
-
-    UpscalerTime->End(InCommandList);
+    bool evalResult;
+    {
+        DlssNr::ScopedUpscaleInput nrInput(InCommandList, InParameters, nrBeforeUpscale, timingQueue);
+        UpscalerTime->Start(InCommandList);
+        evalResult = EvaluateInternal(InCommandList, InParameters);
+        UpscalerTime->End(InCommandList);
+    }
 
     if (!evalResult)
         return false;
@@ -278,8 +305,6 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
                 Imgui = std::make_unique<Menu_Dx12>(GetForegroundWindow(), Device);
         }
     }
-
-    InParameters->Set(NVSDK_NGX_Parameter_Output, paramOutput);
 
     return evalResult;
 }

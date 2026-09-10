@@ -4,29 +4,64 @@ A self-contained module that drives NVIDIA's DLSS Neural Rendering model (`nvngx
 feature 18) over the frames OptiScaler already handles. Nothing in it is officially supported by
 NVIDIA; the model ships in driver packages and is not redistributed here.
 
+## Pipeline integration
+
+The D3D12 pass implements `Shader_Dx12`, takes its resources on dispatch, and shares frame metadata,
+shader constants and composition settings through `DlssNr_Common.h`. `IFeature_Dx12` dispatches it
+for replacement upscalers, including the D3D11 and Vulkan bridges. Native DLSS passthrough uses the
+same adapters from the input hook.
+
+`[DlssNr] BeforeUpscale=false` keeps the post-upscale placement. Setting it to `true` runs the pass
+on a private copy of the input colour before super resolution; the game's original input and NGX
+colour parameter are restored. Ray Reconstruction continues to run Neural Rendering after the
+upscaler, since its input still needs denoising. Native Vulkan also keeps its post-upscale placement.
+
+`[DlssNr] UseProxy=true` selects the driver's NGX interface on D3D12 paths. This route uses a dedicated
+capability parameter map, the SDK's typed setters, and the same encode/model/resolve stages as the
+forwarder route. It does not load the forwarder, and a driver error disables the pass without silently
+falling back. `UseProxy=false` remains the default because successful model creation and visual output
+through the driver still need runtime verification. Native Vulkan continues to use its forwarder.
+Both settings are available in the Neural Rendering menu and are saved with the configuration.
+See `FORWARDER_INVESTIGATION.md` for the historical results and the corrected parameter handling.
+
+The suggested Present-time filter and HUD mask are future extensions. This implementation runs at
+the upscaler boundary, before the game's later UI rendering.
+
+### Validation
+
+From a Visual Studio developer PowerShell at the repository root:
+
+```powershell
+msbuild OptiScaler.sln /m /p:Configuration=Release /p:Platform=x64 /p:PostBuildEventUseInBuild=false
+./tests/dlssnr_proxy/run.ps1
+```
+
+The focused tests compile the production proxy code with a mock NGX backend and the real SDK
+parameter interface. They cover typed parameters, creation/recreation, failure/retry and deferred
+cleanup. They do not validate a real driver's model output or in-game resource states. Feature and
+texture retirement retain the existing 32-evaluate delay; that is not a GPU fence guarantee.
+
 ## For maintainers: how to remove it
 
-There is no compile switch. There used to be one, `OPTI_DLSSNR`, and it was removed on purpose: once
-the composition became an ordinary shader class beside the others, code behind an `#if` was code
-nobody compiled and therefore nobody tested, and thirty-two guard lines across nine files made every
-future refactor riskier for whoever maintains this next. The call sites are now what they always
-claimed to be — one line each — so deleting them is the removal.
+There is no compile switch. Neural Rendering is built with the other shaders and controlled by
+the runtime `Enabled` setting, which is off by default.
 
 **The procedure, in full:**
 
 1. Delete `OptiScaler/dlssnr/` and `OptiScaler/shaders/dlssnr/`.
 2. Drop `dlssnr_forwarder.vcxproj` from the solution.
-3. Delete the six call sites below, and the `[DlssNr]` block in `Config.h` / `Config.cpp`.
+3. Remove the integration points below and the `[DlssNr]` block in `Config.h` / `Config.cpp`.
 
-Nothing else refers to it.
+| File | Role |
+|---|---|
+| `upscalers/IFeature_Dx12.cpp` | before/after stages for replacement upscalers and D3D12 bridges |
+| `inputs/NVNGX_DLSS_Dx12.cpp` | before/after stages for native DLSS passthrough |
+| `inputs/NVNGX_DLSS_Vk.cpp` | native Vulkan post-upscale pass |
+| `menu/menu_common.cpp` | settings panel and cost row |
+| `Config.h` / `Config.cpp` | `[DlssNr]` declarations and configuration read/write |
 
-| File | Sites | What the calls do |
-|---|---|---|
-| `inputs/NVNGX_DLSS_Dx12.cpp` | 2 | the pass after an upscale, on each of the two evaluate routes |
-| `menu/menu_common.cpp` | 2 | the settings panel, and the cost row in the timing table |
-| `upscalers/IFeature_Dx11wDx12.cpp` | 1 | the pass inside the D3D11-on-D3D12 bridge |
-| `upscalers/IFeature_VkwDx12.cpp` | 1 | the pass inside the Vulkan-on-D3D12 bridge |
-| `Config.h` / `Config.cpp` | 3 | the `[DlssNr]` declarations and their read/write runs |
+Also remove the module's project entries and forwarder packaging references. Vulkan integration
+includes extension negotiation; search for `DlssNr` references before removing the module.
 
 The config block is contiguous and marked `removable as one block` at both ends, so it lifts out
 whole rather than needing to be picked apart.

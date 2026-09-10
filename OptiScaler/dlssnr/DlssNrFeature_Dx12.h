@@ -31,9 +31,22 @@ namespace DlssNr
 // State::currentCommandQueue only exists once a D3D12 swapchain has been created, which a Vulkan
 // game never does -- so without this the pass runs and never reports what it cost.
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                          ID3D12CommandQueue* timingQueue = nullptr);
+                          ID3D12CommandQueue* timingQueue = nullptr, ID3D12Resource* outputOverride = nullptr);
 
+// Temporarily supplies NR's private colour copy to the upscaler. The game's texture is never edited,
+// and its parameter pointer is restored even when the upscaler fails. RR should pass enabled=false.
+class ScopedUpscaleInput
+{
+    NVSDK_NGX_Parameter* _params = nullptr;
+    ID3D12Resource* _originalColor = nullptr;
 
+  public:
+    ScopedUpscaleInput(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params, bool enabled,
+                       ID3D12CommandQueue* timingQueue = nullptr);
+    ~ScopedUpscaleInput();
+    ScopedUpscaleInput(const ScopedUpscaleInput&) = delete;
+    ScopedUpscaleInput& operator=(const ScopedUpscaleInput&) = delete;
+};
 
 // Frame generation titles tag their UI layer through Streamline; a copy of it makes the HUD mask
 // exact at the finished frame. Called at tag time.

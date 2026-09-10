@@ -611,17 +611,7 @@ void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* para
                  (int) colour->Resource.ImageViewInfo.Format, depthInverted ? "inverted" : "normal");
     }
 
-    DlssNrConstants encode {};
-    encode.Mode = DlssNrMode_Encode;
-    encode.Width = width;
-    encode.Height = height;
-    encode.WhitePoint = whitePoint;
-    encode.Passthrough = linearHdr ? 0u : 1u;
-    encode.TransferStrength = cfg.DlssNrTransferStrength.value_or_default();
-    encode.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
-    encode.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
-    encode.Transfer = cfg.DlssNrTransfer.value_or_default();
-    encode.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
+    auto encode = DlssNr_Common::MakeConstants(DlssNrMode_Encode, width, height, whitePoint, linearHdr, cfg);
     encode.GuideWidth = guideWidth;
     encode.GuideHeight = guideHeight;
 

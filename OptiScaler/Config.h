@@ -257,6 +257,8 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
+    // Run before super resolution on D3D12 paths; post-upscale remains the default.
+    CustomOptional<bool> DlssNrBeforeUpscale { false };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
@@ -343,15 +345,9 @@ class Config
     // Off by default: it is a diagnostic, not a feature.
     CustomOptional<bool> DlssNrProxyProbe { false };
 
-    // Run Neural Rendering through the driver's own nvngx.dll rather than through the forwarder.
-    //
-    // This is how DLSS itself is called. The forwarder exists only because driving the model
-    // directly trips its caller check, and a probe showed the driver dispatches feature 18 already:
-    // asking for 18 answers differently from asking for a feature that does not exist. OptiScaler
-    // also already tells the driver where to look, since NVNGX_FeatureInfo_Paths carries the game
-    // and OptiScaler folders into Init_Ext.
-    //
-    // Off until it is shown to produce the same picture. If it does, the forwarder can go.
+    // Use the existing NGX proxy on D3D12 paths, without loading the forwarder.
+    // Experimental and off by default until driver feature creation and visual output are verified.
+    // Errors disable the pass; this setting does not silently fall back to the forwarder.
     CustomOptional<bool> DlssNrUseProxy { false };
 
     // Which depth convention the model is told the guide uses.

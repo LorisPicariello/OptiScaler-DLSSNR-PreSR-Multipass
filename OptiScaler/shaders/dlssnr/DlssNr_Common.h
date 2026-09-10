@@ -10,6 +10,9 @@
 // do. The model itself is separate again: creating and evaluating an NGX feature is not a dispatch,
 // so it does not belong in a shader class.
 
+#include <Config.h>
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 
 // Which of the passes a dispatch is. One shader, because they read and write the same set of
@@ -152,8 +155,36 @@ struct alignas(256) DlssNrConstants
     float DebugScale;
 };
 
+static_assert(sizeof(DlssNrConstants) == 256);
+static_assert(offsetof(DlssNrConstants, DebugScale) == 18 * sizeof(uint32_t),
+              "DlssNrConstants must match the Params cbuffer in dlssnr.hlsl");
+
 class DlssNr_Common
 {
+  public:
+    // Keep the controls consumed by the shared shader identical across graphics APIs.
+    static DlssNrConstants MakeConstants(DlssNrMode mode, uint32_t width, uint32_t height, float whitePoint,
+                                         bool linearHdr, const Config& config)
+    {
+        DlssNrConstants constants {};
+        constants.Mode = mode;
+        constants.Width = width;
+        constants.Height = height;
+        constants.WhitePoint = whitePoint;
+        constants.Passthrough = linearHdr ? 0u : 1u;
+        constants.TransferStrength = config.DlssNrTransferStrength.value_or_default();
+        constants.ColourStrength = config.DlssNrColourStrength.value_or_default();
+        constants.DebugView = config.DlssNrDebugView.value_or_default();
+        constants.MaxRatio = config.DlssNrMaxRatio.value_or_default();
+        constants.Transfer = config.DlssNrTransfer.value_or_default();
+        constants.DebugScale = config.DlssNrWhitePointScale.value_or_default();
+        constants.CompareMode = config.DlssNrCompare.value_or_default();
+        constants.CompareSplit = config.DlssNrCompareSplit.value_or_default();
+        constants.CompareZoom = std::max(1.0f, config.DlssNrCompareZoom.value_or_default());
+        constants.CompareSwap = config.DlssNrCompareSwap.value_or_default() ? 1u : 0u;
+        return constants;
+    }
+
   protected:
     // The model's own parameter names, spelled once.
     //

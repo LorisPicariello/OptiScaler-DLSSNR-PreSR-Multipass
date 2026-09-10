@@ -10,25 +10,65 @@ The way to remove it is the **proxy path**: don't call the snippet directly, cal
 (`_nvngx.dll`) as its caller and the check passes for free. This is how RenoDX avoids a forwarder: it
 detours the core's Create/Evaluate rather than calling the snippet itself.
 
-The proxy path is already past the caller check. It fails later, at feature creation, with
-`0xBAD0000B FAIL_UnableToInitializeFeature`. Everything below is about that.
+The original proxy experiment failed at feature creation with
+`0xBAD0000B FAIL_UnableToInitializeFeature`. This error alone does not establish that the core
+loaded the NR snippet or explain why creation failed. The historical observations below have not
+been reproduced after the ABI corrections described next.
 
-Each entry: what was tried, what the log said, what it rules out.
+## Maintainer-feedback implementation (2026-09-11)
+
+The experimental backend uses OptiScaler's existing `NVNGXProxy` initialization,
+capability-parameter, create, evaluate, release and destroy entry points. The direct
+forwarder remains available because successful driver-dispatched NR rendering has not
+been verified in a game.
+
+Code inspection and a local MSVC 14.44 x64 assembly probe against the repository's actual
+`nvsdk_ngx_params.h` found that the old proxy was guessing virtual-table slots from
+source declaration order. The compiler emits these calls for the SDK's typed setters:
+
+| Parameter type | Emitted dispatch | Vtable slot |
+| --- | --- | --- |
+| `float` | `[rax+48]` | 6 |
+| `unsigned int` | `[rax+32]` | 4 |
+| `ID3D12Resource*` | `[rax+8]` | 1 |
+
+Thus slot 6 for floats does not demonstrate a private or incompatible driver ABI. The
+old unsigned setter called slot 3 (the signed integer overload), and the resource
+setter called slot 0 (the `void*` overload). The backend now uses typed `Set` calls,
+removing the float-slot scan and its calls through incompatible function signatures.
+Whether correcting these types resolves NR creation still requires a driver/game test.
+
+The SDK documentation for `NVSDK_NGX_GetCapabilityParameters` says it creates a new
+map that the caller must destroy with `NVSDK_NGX_DestroyParameters`. The old description
+of this map as borrowed and shared with the game's DLSS confused it with deprecated
+`GetParameters`. The proxy now owns and releases its map after releasing its feature.
+It also no longer repeats the already-proven ineffective `Init_Ext` call.
+
+The proxy now preserves creation errors, latches failures until explicit retry, and
+recreates for creation-time settings, resolution or device changes. Like the existing
+direct backend, it waits until the next call to evaluate a newly created feature and
+retires replaced feature/map pairs for 32 calls. This matches the current effect's
+resource-retirement policy; it is not a substitute for a GPU completion fence.
+
+A focused regression harness compiles the production proxy implementation with mock NGX
+entry points and the real SDK parameter interface. From a Visual Studio developer
+PowerShell, run `./tests/dlssnr_proxy/run.ps1`. It covers typed parameter values,
+creation/evaluation separation, tuning changes, deferred destruction, failure propagation,
+explicit retry, and final ownership cleanup. It does not exercise NVIDIA driver behavior.
+
+Each historical entry: what was tried, what the log said, what it rules out.
 
 ---
 
-## What is established
+## Historical observations
 
-- The caller check is **not** the proxy path's blocker. The proxy is past it; `0xBAD0000B` is a real
-  "could not build the feature", downstream of the caller check.
-- The core routes feature 18 (it does not answer "unknown feature"), so the snippet is being reached.
-  It is the *initialisation* of the feature that fails.
-- Re-initialising the core with `Init_Ext` is idempotent: it returns success and changes nothing,
-  reporting the app id and SDK version the core first came up with. So the proxy path cannot change
-  the app id or SDK version out from under the game's own DLSS. (log: "re-init at SDK 0x15 returned
-  0x1 (idempotent)")
-- The float setter lives at vtable slot 6 on the driver's capability block, same as the forwarder
-  path finds. So the block is being driven correctly.
+- `CreateFeature(18)` returned `0xBAD0000B`, while an unknown feature returned a different
+  result. This suggests that the dispatcher recognizes feature 18; it does not by itself
+  prove successful snippet discovery or that the snippet was called.
+- Re-initializing the core with `Init_Ext` returned success but logs retained the original
+  application ID and SDK version. The experiment did not change the existing NGX session.
+- Float values round-tripped through slot 6. This agrees with the SDK interface as compiled
+  by MSVC; it does not establish that the remaining manually selected slots were correct.
 
 ## Theories tried and disproven
 
