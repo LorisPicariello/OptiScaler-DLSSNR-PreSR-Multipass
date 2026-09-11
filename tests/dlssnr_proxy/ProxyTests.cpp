@@ -3,6 +3,15 @@
 #include "../../OptiScaler/dlssnr/DlssNr_Status.cpp"
 #include "../../OptiScaler/upscalers/ShaderPipeline_Dx12.h"
 
+// NVIDIA's DX11 table accepts bridge resources through void*, but ignores DX12 setters.
+struct Dx11Parameters : Mock::Params
+{
+    using Mock::Params::Get;
+    using Mock::Params::Set;
+    void Set(const char*, ID3D12Resource*) override {}
+    NVSDK_NGX_Result Get(const char*, ID3D12Resource**) const override { return NVSDK_NGX_Result_Fail; }
+};
+
 int main()
 {
     DlssNr::Proxy::Context proxy;
@@ -183,4 +192,28 @@ int main()
     assert(parameters.Get(NVSDK_NGX_Parameter_Color, &restoredColor) == NVSDK_NGX_Result_Success);
     assert(parameters.Get(NVSDK_NGX_Parameter_Output, &restoredOutput) == NVSDK_NGX_Result_Success);
     assert(restoredColor == &color && restoredOutput == &output);
+
+    Dx11Parameters bridgeParameters;
+    bridgeParameters.Set(NVSDK_NGX_Parameter_Color, static_cast<void*>(&color));
+    bridgeParameters.Set(NVSDK_NGX_Parameter_Output, static_cast<void*>(&output));
+    // Reproduce both failed substitutions: unchanged colour bypasses pre-SR NR; unchanged
+    // output leaves the post-SR NR input unwritten even though upscaling reports success.
+    bridgeParameters.Set(NVSDK_NGX_Parameter_Color, &intermediate);
+    bridgeParameters.Set(NVSDK_NGX_Parameter_Output, &intermediate);
+    assert(GetUpscalerResource_Dx12(&bridgeParameters, NVSDK_NGX_Parameter_Color) == &color);
+    assert(GetUpscalerResource_Dx12(&bridgeParameters, NVSDK_NGX_Parameter_Output) == &output);
+
+    for (NVSDK_NGX_Parameter* table : { static_cast<NVSDK_NGX_Parameter*>(&parameters),
+                                       static_cast<NVSDK_NGX_Parameter*>(&bridgeParameters) })
+    {
+        {
+            RestoreUpscalerResources_Dx12 restore(table);
+            SetUpscalerResource_Dx12(table, NVSDK_NGX_Parameter_Color, &intermediate);
+            SetUpscalerResource_Dx12(table, NVSDK_NGX_Parameter_Output, &intermediate);
+            assert(GetUpscalerResource_Dx12(table, NVSDK_NGX_Parameter_Color) == &intermediate);
+            assert(GetUpscalerResource_Dx12(table, NVSDK_NGX_Parameter_Output) == &intermediate);
+        }
+        assert(GetUpscalerResource_Dx12(table, NVSDK_NGX_Parameter_Color) == &color);
+        assert(GetUpscalerResource_Dx12(table, NVSDK_NGX_Parameter_Output) == &output);
+    }
 }

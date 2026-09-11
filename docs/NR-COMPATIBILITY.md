@@ -75,3 +75,15 @@ x64\nr_skin_shader_smoke.exe OptiScaler\shaders\dlssnr\precompile\dlssnr.hlsl
 ```
 
 Related backend, resource-lifetime and presentation fixes are listed in [COMPATIBILITY-CHANGES.md](COMPATIBILITY-CHANGES.md).
+# BG3 normal NR buffer routing
+
+BG3's DX11-to-DX12 bridge can retain NVIDIA's DX11 parameter table. That table accepts
+DX12 resources through `void*`, but ignores `Set(name, ID3D12Resource*)` and rejects the
+corresponding typed getter. Normal post-SR NR therefore read an unwritten intermediate
+(black image); normal pre-SR NR's replacement colour never reached DLSS. The deferred
+generate-before/apply-after schedule avoided these substitutions.
+
+The shared DX12 pipeline now preserves the parameter table's supported resource access
+type when redirecting colour/output and restoring temporary bindings. Regression tests
+cover native and bridge tables; the production helpers were also checked against NVIDIA's
+real DX11 table. These checks establish buffer routing, not final in-game image quality.

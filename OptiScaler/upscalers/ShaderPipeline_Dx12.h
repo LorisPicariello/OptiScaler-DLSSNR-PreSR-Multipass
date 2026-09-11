@@ -21,6 +21,17 @@ inline ID3D12Resource* GetUpscalerResource_Dx12(NVSDK_NGX_Parameter* parameters,
     return resource;
 }
 
+inline void SetUpscalerResource_Dx12(NVSDK_NGX_Parameter* parameters, const char* name, ID3D12Resource* resource)
+{
+    // A DX11 bridge can retain the driver's DX11 parameter table. That table rejects
+    // DX12-typed access, including Set, but accepts the bridge's resources as void*.
+    ID3D12Resource* previous = nullptr;
+    if (parameters->Get(name, &previous) == NVSDK_NGX_Result_Success)
+        parameters->Set(name, resource);
+    else
+        parameters->Set(name, static_cast<void*>(resource));
+}
+
 // The same resource routing is used before and after the upscaler, including API bridges.
 struct ShaderPass_Dx12
 {

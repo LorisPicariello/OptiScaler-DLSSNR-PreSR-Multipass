@@ -485,28 +485,28 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
                          [&](ID3D12Resource*, ID3D12Resource* output)
                          {
                              auto* previousOutput = GetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Output);
-                             InParameters->Set(NVSDK_NGX_Parameter_Output, output);
+                             SetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Output, output);
                              NeuralRendering->ProcessSeam(InCommandList, InParameters, false, timingQueue,
                                                           rayReconstruction, submissionEpoch, interop,
                                                           GetFeatureFlags());
-                             InParameters->Set(NVSDK_NGX_Parameter_Output, previousOutput);
+                             SetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Output, previousOutput);
                              return true;
                          } });
 
     // Upscaler will write to the first active shader, or just output
     auto* currentTarget = SetupShaderPipeline(pipeline, paramOutput);
-    InParameters->Set(NVSDK_NGX_Parameter_Output, currentTarget);
+    SetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Output, currentTarget);
     auto* originalColor = GetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Color);
     if (nrBeforeUpscale)
     {
         if (auto* nrInput = PrepareDlssNrInput(*NeuralRendering, Device, InCommandList, InParameters, GetFeatureFlags(),
                                                timingQueue, interop, rayReconstruction, submissionEpoch))
-            InParameters->Set(NVSDK_NGX_Parameter_Color, nrInput);
+            SetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Color, nrInput);
     }
     UpscalerTime->Start(InCommandList);
     const bool evalResult = EvaluateInternal(InCommandList, InParameters);
     UpscalerTime->End(InCommandList);
-    InParameters->Set(NVSDK_NGX_Parameter_Color, originalColor);
+    SetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Color, originalColor);
 
     if (!evalResult)
         return false;
