@@ -50,7 +50,7 @@ $files['Licenses/FidelityFX_v1_LICENSE.md'] = Join-Path $root 'external/Fidelity
 $files['Licenses/FidelityFX_v2_LICENSE.md'] = Join-Path $root 'external/FidelityFX-SDK-v2/docs/license.md'
 $files['Licenses/DirectX_LICENSE.txt'] = Join-Path $root 'external/directx_agility_sdk/LICENSE.txt'
 $files['Licenses/RenoDX_ATTRIBUTION.txt'] = Join-Path $root 'Licenses/RenoDX_ATTRIBUTION.txt'
-foreach ($name in @('CREDITS.md', 'NR-COMPATIBILITY.md', 'NR-MOTION-METADATA.md', 'PADDED-PRESR.md',
+foreach ($name in @('CREDITS.md', 'NR-COMPATIBILITY.md', 'NR-MOTION-METADATA.md', 'NR-PIPELINE-UI.md', 'PADDED-PRESR.md',
                     'DEFERRED-NR-DLSS.md', 'RESIDUAL-ACROSS-RR.md', 'COMPATIBILITY-CHANGES.md',
                     'ISSUE-REVIEW-2026-09-10.md', 'PR-REVIEW-20260909.md', 'VULKAN-PARITY-REVIEW.md')) {
     $files["docs/$name"] = Join-Path $root "docs/$name"

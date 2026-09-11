@@ -69,6 +69,7 @@ The table below accounts for every changed/added path relative to the pinned off
 | docs/NR-COMPATIBILITY.md | NR instructions, design/history, compatibility evidence or upstream audit |
 | docs/NR-MOTION-METADATA.md | NR instructions, design/history, compatibility evidence or upstream audit |
 | docs/NR-UPSTREAM-REVIEW.md | NR instructions, design/history, compatibility evidence or upstream audit |
+| docs/NR-PIPELINE-UI.md | Maps existing NR controls to the interactive pipeline diagram and records UI validation |
 | docs/PADDED-PRESR.md | NR instructions, design/history, compatibility evidence or upstream audit |
 | docs/PR-2-REVIEW.md | NR instructions, design/history, compatibility evidence or upstream audit |
 | docs/PR-REVIEW-20260909.md | NR instructions, design/history, compatibility evidence or upstream audit |
@@ -88,6 +89,7 @@ The table below accounts for every changed/added path relative to the pinned off
 | OptiScaler.ini | Baseline defaults plus NR options and DX11 bridge help |
 | OptiScaler/Config.cpp | NR settings and targeted obsolete-key migration; baseline FG settings retained |
 | OptiScaler/Config.h | NR settings and targeted obsolete-key migration; baseline FG settings retained |
+| OptiScaler/dlssnr/DlssNr_PipelineUi.h | Interactive configured colour/edit flow, with stage selection and game-context nodes |
 | OptiScaler/proxies/NVNGX_Proxy.h | Return actual Vulkan initialization status so NR and other callers can detect driver initialization failure |
 | OptiScaler/dlssnr/design/DEVELOPMENT.md | NR model, composition, scheduling, controls or generated shader artifact |
 | OptiScaler/dlssnr/design/frame-hold.md | NR model, composition, scheduling, controls or generated shader artifact |
