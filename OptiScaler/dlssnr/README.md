@@ -52,8 +52,8 @@ has been submitted.
   private DLSS feature, then composes it after the game's upscaler. It takes precedence over ordinary
   placement on supported SR paths. See `docs/DEFERRED-NR-DLSS.md`.
 - `ResidualAcrossRR` with `RunBeforeSR` preserves RR's original colour input and carries NR's edit
-  across RR+SR using a reprojected residual history. `ResidualFG` adds an experimental interpolation
-  path to deferred processing; these modes have their own pairing and history requirements.
+  across RR+SR using a reprojected residual history. Deferred processing evaluates NR on every
+  rendered frame; both modes retain their own pairing and history requirements.
 
 Finished-picture/deferred scheduling is a D3D12 facility, including its API bridges. Native Vulkan
 does not implement these schedules and does not substitute a different private upscaler.
@@ -209,7 +209,7 @@ part of the solution, and builds with everything else.
   use the owner registry, whose lock also protects owner selection against destruction; they are
   not restricted to the ordinary upscaler call site.
 - **Residual history is intentional.** Ordinary composition and model histories are distinct from
-  the RR residual accumulator, frame-hold reuse and deferred residual FG. Cuts, missed seams and
+  the RR residual accumulator, ordinary frame-hold reuse and deferred DLSS composition. Cuts, missed seams and
   generation changes must invalidate the relevant residual pair/history.
 - **UI handling depends on placement.** Ordinary pre/post-upscale NR runs before later UI. Late
   finished-picture processing uses different resources and timing. Streamline hooks now supply

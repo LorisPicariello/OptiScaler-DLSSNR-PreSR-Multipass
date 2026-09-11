@@ -273,8 +273,6 @@ class Config
     // v2 history blend rate for the accumulator above, 0.01..1. Lower = stabler but slower to
     // appear; 1.0 = no accumulation (each frame's raw residual, which flickers). Default 0.08.
     CustomOptional<float> DlssNrResidualAcrossRrBlend { 0.08f };
-    CustomOptional<bool> DlssNrResidualFg { false };
-    CustomOptional<bool> DlssNrResidualFgApproxCamera { false };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
@@ -812,14 +810,6 @@ class Config
 
     // Frame Generation
     CustomOptional<FGInput> FGInput { FGInput::NoFG };
-    CustomOptional<bool> ExternalFrameGeneration { false };
-    CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };
-    CustomOptional<bool, NoDefault> FGDLSSGAdaBlackwellKernels;
-    // Ampere/Turing (SM86/SM75) MFG unlocker — sideloads the dlssg_for_sm86 proxy
-    CustomOptional<bool> FGDLSSGAmpereMfgUnlock { false };
-    CustomOptional<int>  FGDLSSGAmpereMfgMaxFrames { 3 };       // 0-3: 0=runtime default (3X), 1=2X, 2=3X, 3=4X
-    CustomOptional<std::string, NoDefault> FGDLSSGAmpereMfgKernelImage;     // Auto / PTX / Cubin
-    CustomOptional<bool> FGDLSSGAmpereMfgHardwareBilinear { false };        // Optional approximate sampling (SM86 only)
     CustomOptional<FGOutput> FGOutput { FGOutput::NoFG };
     CustomOptional<FGNvngxReplacement> FGNvngxReplacement { FGNvngxReplacement::None };
     CustomOptional<bool> FGDrawUIOverFG { false };

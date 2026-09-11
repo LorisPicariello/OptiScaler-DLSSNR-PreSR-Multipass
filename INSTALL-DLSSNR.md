@@ -75,7 +75,7 @@ OptiScaler into pass-through mode, which means no menu and no Neural Rendering.
 ## Game notes
 
 - **Baldur's Gate 3:** install beside `bg3.exe` / `bg3_dx11.exe` in `Baldurs Gate 3\bin`.
-  Use `Dx12Upscaler=dlss` for `bg3.exe`, or `Dx11Upscaler=dlss_12` for `bg3_dx11.exe`.
+  Use `VulkanUpscaler=dlss` for `bg3.exe`, or `Dx11Upscaler=dlss_12` for `bg3_dx11.exe`.
 - **Hogwarts Legacy:** install in `Phoenix\Binaries\Win64`; `dxgi.dll` was validated.
 - **Cyberpunk 2077:** install in `bin\x64`; `dbghelp.dll` was validated on the development machine.
   Existing CET/RED4ext/ReShade loaders can require a different proxy or correct chaining.
@@ -97,8 +97,8 @@ following local structure. The corresponding INI keys are `Pass2Intensity`, `Pas
 `Pass2LocalTone`, `Pass2SkinStructure`, and `Pass2AutoMask`, with matching `Pass3...` keys.
 Use `auto` for the default behavior. Styles retain `Pass2Style` / `Pass3Style`.
 
-These controls apply to D3D12 multipass and its bridges, both before/after SR and after native RR.
-Native Vulkan and the driver-proxy backend remain single-pass. Preset hints are still transmitted
+These controls apply to D3D12 and native Vulkan multipass, including the D3D12 bridges and
+before/after SR or RR+SR placement. The experimental driver-proxy backend remains single-pass. Preset hints are still transmitted
 at model creation, but a changed hint is not proof of a changed model. They are preserved under
 **Advanced preset hints (effect unverified)** and in the INI for compatibility.
 
@@ -144,12 +144,12 @@ Keep the game's genuine `nvngx_dlssd.dll` (RR) separate from `nvngx_dlssnr.dll` 
 For an RR-only comparison, disable the master NR switch; “Apply the model” merely hides the edit
 and still incurs NR's GPU cost. Successful RR initialization alone does not prove image quality.
 
-## Optional DLSS Frame Generation
+## Frame generation
 
-For the six NVIDIA Streamline/FG dependencies, the pinned download command, and separate instructions
-for native/external FG versus OptiScaler's own FG, see [DLSS-FRAME-GENERATION.md](docs/DLSS-FRAME-GENERATION.md).
-Do not copy another game's Streamline folder or assume NR working proves FG compatibility.
-The optional component does not include the NR model or enable FG automatically.
+Use OptiScaler's existing [OptiFG documentation](https://github.com/optiscaler/OptiScaler/wiki/OptiFG)
+for its supported frame-generation paths. This branch does not bundle or download NVIDIA FG runtimes.
+An NR result does not establish FG compatibility; retain the game's working dependencies and test
+presentation behavior separately.
 
 ## Diagnose a missing menu
 
@@ -185,6 +185,6 @@ The INI setting is `[DlssNr] FinishedPicture=true`. Turn it off to return to you
 
 To run the model before upscaling but apply its changes to the finished picture, enable **Apply NR to the finished picture** and **Run the model before Super Resolution**. This uses the existing private DLSS path to upscale the saved changes. The game's picture stays unchanged until the final application, and NR is not run a second time.
 
-This combination is experimental. It converts the saved changes into bounded relative colour adjustments because the game's final tone mapping is not available to the mod. It can look different from running the model directly on the finished picture. It supports the SDR, HDR10 and scRGB output paths in native DirectX 12, with normal frame generation on or off. Ray Reconstruction and the separate NR every second frame mode are not supported in this combination. A separate DLSS pass still has a GPU cost; a smaller NR input does not guarantee a faster overall frame.
+This combination is experimental. It converts the saved changes into bounded relative colour adjustments because the game's final tone mapping is not available to the mod. It can look different from running the model directly on the finished picture. It supports the SDR, HDR10 and scRGB output paths in native DirectX 12, with normal frame generation on or off. Ray Reconstruction is not supported in this combination. A separate DLSS pass still has a GPU cost; a smaller NR input does not guarantee a faster overall frame.
 
 The NR timing is **elapsed GPU time**, including delays while other GPU work runs. It is not the number of milliseconds added to each game frame. Applying NR later can increase this reading without lowering FPS. Compare FPS in the same scene to judge the performance change. With the pre-SR combination, this timing covers NR itself; the separate DLSS pass and final application also take GPU time.

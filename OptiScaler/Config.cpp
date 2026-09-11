@@ -68,31 +68,6 @@ bool Config::Reload(std::filesystem::path iniPath)
         // Frame Generation
         {
             FGEnabled.set_from_config(readBool("FrameGen", "Enabled"));
-            ExternalFrameGeneration.set_from_config(readBool("FrameGen", "External"));
-            FGDLSSGAdaMfgUnlock.set_from_config(readBool("DLSSG", "AdaMfgUnlock"));
-            FGDLSSGAdaBlackwellKernels.set_from_config(readBool("DLSSG", "AdaBlackwellKernels"));
-            FGDLSSGAmpereMfgUnlock.set_from_config(readBool("DLSSG", "AmpereMfgUnlock"));
-            FGDLSSGAmpereMfgMaxFrames.set_from_config(readInt("DLSSG", "AmpereMfgMaxFrames"));
-            if (FGDLSSGAmpereMfgMaxFrames.has_value() &&
-                (FGDLSSGAmpereMfgMaxFrames.value() < 0 || FGDLSSGAmpereMfgMaxFrames.value() > 3))
-                FGDLSSGAmpereMfgMaxFrames.reset();
-
-            if (auto ampereKernel = readString("DLSSG", "AmpereMfgKernelImage"); ampereKernel.has_value())
-            {
-                if (lstrcmpiA(ampereKernel.value().c_str(), "ptx") == 0)
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("PTX");
-                else if (lstrcmpiA(ampereKernel.value().c_str(), "cubin") == 0)
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("Cubin");
-                else
-                    FGDLSSGAmpereMfgKernelImage.set_from_config("Auto");
-            }
-            FGDLSSGAmpereMfgHardwareBilinear.set_from_config(readBool("DLSSG", "AmpereMfgHardwareBilinear"));
-
-            if (FGDLSSGAmpereMfgUnlock.value_or_default())
-            {
-                ExternalFrameGeneration.set_from_config(true);
-                FGDLSSGAdaMfgUnlock.set_from_config(false);
-            }
             FGDebugView.set_from_config(readBool("FrameGen", "DebugView"));
 
             if (auto FGInputString = readString("FrameGen", "FGInput"); FGInputString.has_value())
@@ -350,8 +325,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrDeferredDlss.set_from_config(readBool("DlssNr", "DeferredDLSS"));
             DlssNrResidualAcrossRr.set_from_config(readBool("DlssNr", "ResidualAcrossRR"));
             DlssNrResidualAcrossRrBlend.set_from_config(readFloat("DlssNr", "ResidualAcrossRRBlend"));
-            DlssNrResidualFg.set_from_config(readBool("DlssNr", "ResidualFG"));
-            DlssNrResidualFgApproxCamera.set_from_config(readBool("DlssNr", "ResidualFGApproxCamera"));
             DlssNrToggleKey.set_from_config(readInt("DlssNr", "ToggleKey"));
             DlssNrTransferStrength.set_from_config(readFloat("DlssNr", "TransferStrength"));
             DlssNrColourStrength.set_from_config(readFloat("DlssNr", "ColourStrength"));
@@ -999,19 +972,12 @@ bool Config::SaveIni()
 
     // Frame Generation
     {
-        bool ampereUnlock = Instance()->FGDLSSGAmpereMfgUnlock.value_for_config_or(false);
-        bool adaUnlock = Instance()->FGDLSSGAdaMfgUnlock.value_for_config_or(false);
-        if (ampereUnlock && adaUnlock)
-            adaUnlock = false;
-
         ini.SetValue("FrameGen", "Enabled", GetBoolValue(Instance()->FGEnabled.value_for_config()).c_str());
-        ini.SetValue("FrameGen", "External", GetBoolValue(Instance()->ExternalFrameGeneration.value_for_config_or(false) || ampereUnlock).c_str());
-        ini.SetValue("DLSSG", "AdaMfgUnlock", GetBoolValue(adaUnlock).c_str());
-        ini.SetValue("DLSSG", "AdaBlackwellKernels", GetBoolValue(Instance()->FGDLSSGAdaBlackwellKernels.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "AmpereMfgUnlock", GetBoolValue(ampereUnlock).c_str());
-        ini.SetValue("DLSSG", "AmpereMfgMaxFrames", GetIntValue(Instance()->FGDLSSGAmpereMfgMaxFrames.value_for_config()).c_str());
-        ini.SetValue("DLSSG", "AmpereMfgKernelImage", Instance()->FGDLSSGAmpereMfgKernelImage.value_for_config_or("auto").c_str());
-        ini.SetValue("DLSSG", "AmpereMfgHardwareBilinear", GetBoolValue(Instance()->FGDLSSGAmpereMfgHardwareBilinear.value_for_config()).c_str());
+        // Discard settings from removed fork-only frame-generation extensions.
+        ini.Delete("FrameGen", "External");
+        for (const auto* key : { "AdaMfgUnlock", "AdaBlackwellKernels", "AmpereMfgUnlock", "AmpereMfgMaxFrames",
+                                "AmpereMfgKernelImage", "AmpereMfgHardwareBilinear" })
+            ini.Delete("DLSSG", key);
         ini.SetValue("FrameGen", "DebugView", GetBoolValue(Instance()->FGDebugView.value_for_config()).c_str());
         std::string FGInputString = "auto";
         if (auto FGInputHeld = Instance()->FGInput.value_for_config(); FGInputHeld.has_value())
@@ -1286,9 +1252,9 @@ bool Config::SaveIni()
                  GetBoolValue(Instance()->DlssNrResidualAcrossRr.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ResidualAcrossRRBlend",
                  GetFloatValue(Instance()->DlssNrResidualAcrossRrBlend.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "ResidualFG", GetBoolValue(Instance()->DlssNrResidualFg.value_for_config()).c_str());
+    ini.Delete("DlssNr", "ResidualFG");
+    ini.Delete("DlssNr", "ResidualFGApproxCamera");
     ini.Delete("DlssNr", "Precision"); // Remove the obsolete backend selector from saved configurations.
-    ini.SetValue("DlssNr", "ResidualFGApproxCamera", GetBoolValue(Instance()->DlssNrResidualFgApproxCamera.value_for_config()).c_str());
     {
         auto toggle = Instance()->DlssNrToggleKey.value_for_config();
         ini.SetValue("DlssNr", "ToggleKey", GetIntValue(toggle, toggle > 0).c_str());

@@ -23,9 +23,7 @@ comparison keep FG and RR off and use the same model profile, exposure and stren
 is relative to the active render raster, not final output: 100% for a 1080p input runs NR at 1080p.
 Existing per-pass controls remain effective. The menu reports the private DLSS path separately.
 
-An optional [half-rate residual FG experiment](RESIDUAL-FG-PROTOTYPE.md) adds every-other-frame
-NR with NVIDIA interpolation. It has additional latency, camera and downstream-effect limitations;
-the every-frame pipeline described below remains the default.
+Deferred processing evaluates NR on every rendered frame.
 
 Requires your own working NVIDIA DLSS SR runtime and NVIDIA NR runtime. None is redistributed with
 this change. GPU/runtime support is determined by actual private DLSS creation/evaluation, not a GPU
@@ -81,7 +79,7 @@ matching full-resolution NR or restoring the reported gun-rack shadows is made.
 - That hardware test uses synthetic static inputs and real DLSS, not an NR model, game injection or the
   complete before/after hook. Moving-scene alignment, private-pass scheduling in games, FG compatibility,
   visual quality and performance require separate live-game validation. Experimental builds have been
-  installed locally in BG3 and Jedi Survivor; see the residual FG notes for the newer tests.
+  installed locally in BG3 and Jedi Survivor; those installations are not a validation of this cleanup.
 
 Reproduce from an x64 VS developer prompt:
 

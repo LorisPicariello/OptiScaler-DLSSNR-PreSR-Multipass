@@ -4,6 +4,11 @@ This fork builds on [Dagherbou/OptiScaler_DLSSNR](https://github.com/Dagherbou/O
 
 Colour processing is derived from [RenoDX by clshortfuse](https://github.com/clshortfuse/renodx). See the [RenoDX attribution and licence](../Licenses/RenoDX_ATTRIBUTION.txt) for details.
 
+Additional retained integrations include multipass/composition work attributed to hhkbble,
+[y4my4my4m's Vulkan and compatibility changes](VULKAN-PARITY-REVIEW.md), and
+[cmh1448's motion-vector metadata work](NR-MOTION-METADATA.md). See the linked notes for source
+commits and the limits of their original test reports.
+
 ## OptiScaler contributors
 
 These credits are retained from the original OptiScaler README:

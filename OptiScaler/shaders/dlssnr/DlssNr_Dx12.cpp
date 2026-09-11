@@ -6,8 +6,6 @@
 #include <resource_tracking/ResTrack_Dx12.h>
 
 #include <dlssnr/DlssNr.h>
-#include <dlssnr/ResidualFg.h>
-#include <DirectXMath.h>
 
 #include <dlssnr/DlssNr_Capture.h>
 #include <dlssnr/DlssNr_Proxy.h>
@@ -42,9 +40,6 @@ using DlssNr::Profiles::PassStyle;
 using DlssNr::Profiles::PassTuning;
 
 using DlssNr::CalibrationReading;
-using DlssNr::ResidualFg;
-using DlssNr::ResidualFgApi;
-using DlssNr::ResidualFgCamera;
 
 namespace
 {
@@ -1456,36 +1451,6 @@ struct DlssNr_Dx12::State
         explicit DeferredSrContext(State& state) : owner(state) {}
 
         static constexpr unsigned MarkerCount = 16;
-        struct HalfRate
-        {
-            std::unique_ptr<ResidualFg> fg;
-            ID3D12Resource *motion = nullptr, *previousMotion = nullptr, *anchorMotion = nullptr,
-                           *interpolated = nullptr, *suppression = nullptr, *suppressionTexture = nullptr,
-                           *zeroUpload = nullptr, *history[2] {};
-            bool ready = false, failed = false, havePrevious = false, previousWasAnchor = false;
-            bool motionReadable = false, previousReadable = false, anchorReadable = false;
-            bool historyReadable[2] {}, interpolationReadable = false;
-            bool suppressionReadable = false;
-            unsigned writeIndex = 0;
-            float historyScale[2] { 1, 1 };
-            unsigned long long lastEpoch = 0, createEpoch = 0, anchorId = 0;
-            unsigned long long nrAnchors = 0, skippedNr = 0;
-            ResidualFgCamera camera;
-            ~HalfRate()
-            {
-                // Generation's GPU completion markers protect all of these lifetimes.
-                fg.reset();
-                for (auto* r : { motion, previousMotion, anchorMotion, interpolated, suppression, suppressionTexture,
-                                 zeroUpload, history[0], history[1] })
-                    if (r)
-                        r->Release();
-            }
-            void Reset()
-            {
-                havePrevious = false;
-                previousWasAnchor = false;
-            }
-        };
         struct Generation
         {
             ID3D12Device* device = nullptr;
@@ -1505,19 +1470,9 @@ struct DlssNr_Dx12::State
             unsigned long long lastBeginEpoch = 0;
             bool began = false;
             std::unique_ptr<DlssNr_Dx12> codec;
-            bool halfRequested = false, approximateCamera = false;
-            std::string halfStatus;
-            bool sampleAndHold = false;
-            DlssNrResidualHold hold;
-            ID3D12Resource* zeroMotion = nullptr;
-            std::unique_ptr<HalfRate> half;
-
             bool Idle() const { return !everRecorded || completed[lastMarker] != 0; }
             ~Generation()
             {
-                half.reset();
-                if (zeroMotion)
-                    zeroMotion->Release();
                 if (feature && NVNGXProxy::D3D12_ReleaseFeature())
                     NVNGXProxy::D3D12_ReleaseFeature()(feature);
                 if (parameters && NVNGXProxy::D3D12_DestroyParameters())
@@ -1573,10 +1528,7 @@ struct DlssNr_Dx12::State
             ID3D12GraphicsCommandList* cmd = nullptr;
             NVSDK_NGX_Parameter* caller = nullptr;
             ID3D12Resource* output = nullptr;
-            unsigned long long epoch = 0;
             float scale = 1;
-            bool skipNr = false;
-            bool half = false;
         } pending;
 
         void Say(const std::string& text)
@@ -1590,12 +1542,7 @@ struct DlssNr_Dx12::State
         {
             pending = {};
             if (current)
-            {
                 current->reset = true;
-                current->hold.Reset();
-                if (current->half)
-                    current->half->Reset();
-            }
         }
         void Collect()
         {
@@ -1648,167 +1595,8 @@ struct DlssNr_Dx12::State
             return true;
         }
 
-        bool CreateHalfRate(Generation& g, ID3D12GraphicsCommandList* cmd, unsigned long long epoch)
-        {
-            g.half = std::make_unique<HalfRate>();
-            auto& h = *g.half;
-            h.motion = owner.CreateScratch(g.device, DXGI_FORMAT_R32G32B32A32_FLOAT, g.w, g.h);
-            h.previousMotion = owner.CreateScratch(g.device, DXGI_FORMAT_R32G32B32A32_FLOAT, g.w, g.h);
-            h.anchorMotion = owner.CreateScratch(g.device, DXGI_FORMAT_R32G32B32A32_FLOAT, g.w, g.h);
-            h.interpolated = owner.CreateScratch(g.device, DXGI_FORMAT_R16G16B16A16_FLOAT, g.outW, g.outH);
-            h.suppressionTexture = owner.CreateScratch(g.device, DXGI_FORMAT_R8_UNORM, 1, 1);
-            for (auto& r : h.history)
-                r = owner.CreateScratch(g.device, g.outputFormat, g.outW, g.outH);
-            auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-            auto desc = CD3DX12_RESOURCE_DESC::Buffer(256, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-            if (FAILED(g.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-                                                         IID_PPV_ARGS(&h.suppression))))
-                return false;
-            heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-            desc = CD3DX12_RESOURCE_DESC::Buffer(256);
-            if (FAILED(g.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                                         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                                                         IID_PPV_ARGS(&h.zeroUpload))))
-                return false;
-            void* zero = nullptr;
-            if (FAILED(h.zeroUpload->Map(0, nullptr, &zero)))
-                return false;
-            std::memset(zero, 0, 256);
-            h.zeroUpload->Unmap(0, nullptr);
-            if (!h.motion || !h.previousMotion || !h.anchorMotion || !h.interpolated || !h.suppressionTexture ||
-                !h.history[0] || !h.history[1])
-                return false;
-            ResidualFgApi api { NVNGXProxy::D3D12_GetCapabilityParameters(),
-                                NVNGXProxy::D3D12_AllocateParameters(),
-                                NVNGXProxy::D3D12_DestroyParameters(),
-                                NVNGXProxy::D3D12_CreateFeature(),
-                                [](ID3D12GraphicsCommandList* c, const NVSDK_NGX_Handle* f, NVSDK_NGX_Parameter* p,
-                                   PFN_NVSDK_NGX_ProgressCallback cb)
-                                { return NVNGXProxy::D3D12_EvaluateFeature()(c, f, p, cb); },
-                                NVNGXProxy::D3D12_ReleaseFeature() };
-            h.fg = std::make_unique<ResidualFg>(api);
-            auto result = h.fg->Create(cmd, g.outW, g.outH, g.w, g.h);
-            if (result != NVSDK_NGX_Result_Success)
-            {
-                g.halfStatus = "FG creation failed: " + std::to_string((unsigned) result);
-                return false;
-            }
-            h.createEpoch = epoch;
-            h.ready = true;
-            return true;
-        }
-
-        bool PrepareHalfRate(Generation& g, ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source,
-                             ID3D12Resource* motion, unsigned long long epoch, unsigned long long submittedEpoch)
-        {
-            if (!g.halfRequested)
-                return false;
-            if (!(g.flags & NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) ||
-                (g.flags & NVSDK_NGX_DLSS_Feature_Flags_MVJittered))
-            {
-                g.halfStatus = "requires low-resolution, non-jittered motion";
-                return false;
-            }
-            // This initial bridge integration explicitly requires opt-in approximate guides.
-            // Never mark invented matrices as game-supplied camera data.
-            if (!g.approximateCamera)
-            {
-                g.halfStatus = "explicit approximate-camera opt-in required";
-                return false;
-            }
-            if (!g.half)
-            {
-                g.halfStatus = "initializing NVIDIA FG";
-                if (!CreateHalfRate(g, cmd, submittedEpoch))
-                    g.half->failed = true;
-                return false;
-            }
-            auto& h = *g.half;
-            if (!h.ready || h.failed || submittedEpoch == h.createEpoch)
-                return false;
-            if (g.reset || UInt(source, NVSDK_NGX_Parameter_Reset) || epoch != h.lastEpoch + 1)
-                h.Reset();
-            h.lastEpoch = epoch;
-            auto desc = motion->GetDesc();
-            if (desc.Width < g.w || desc.Height < g.h || desc.MipLevels != 1 || desc.SampleDesc.Count != 1)
-            {
-                h.Reset();
-                g.halfStatus = "unsupported motion texture";
-                return false;
-            }
-            if (h.motionReadable)
-                owner.Barrier(cmd, h.motion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            DlssNrConstants normalize {};
-            normalize.Mode = DlssNrMode_NormalizeMotion;
-            normalize.Width = g.w;
-            normalize.Height = g.h;
-            normalize.MvScaleX = Float(source, NVSDK_NGX_Parameter_MV_Scale_X, 1) / g.w;
-            normalize.MvScaleY = Float(source, NVSDK_NGX_Parameter_MV_Scale_Y, 1) / g.h;
-            bool ok =
-                g.codec->DispatchPass(cmd, normalize, motion, nullptr, nullptr, nullptr, nullptr, h.motion, nullptr);
-            owner.Barrier(cmd, h.motion, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            h.motionReadable = true;
-            if (!ok)
-            {
-                h.Reset();
-                g.halfStatus = "motion normalization failed";
-                return false;
-            }
-            if (h.havePrevious)
-            {
-                if (h.anchorReadable)
-                    owner.Barrier(cmd, h.anchorMotion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                normalize.Mode = DlssNrMode_ComposeMotion;
-                ok = g.codec->DispatchPass(cmd, normalize, h.motion, h.previousMotion, nullptr, nullptr, nullptr,
-                                           h.anchorMotion, nullptr);
-                owner.Barrier(cmd, h.anchorMotion, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                h.anchorReadable = true;
-                if (!ok)
-                {
-                    h.Reset();
-                    g.halfStatus = "motion composition failed";
-                    return false;
-                }
-            }
-            using namespace DirectX;
-            const auto& cfg = *Config::Instance();
-            float nearPlane = cfg.FsrCameraNear.value_or_default(), farPlane = cfg.FsrCameraFar.value_or_default();
-            float fov = cfg.FsrVerticalFov.value_or_default() * XM_PI / 180.0f;
-            if (!(nearPlane > 0 && farPlane > nearPlane && fov > 0.01f && fov < XM_PI - 0.01f))
-            {
-                h.Reset();
-                g.halfStatus = "invalid approximate camera parameters";
-                return false;
-            }
-            if (g.flags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted)
-                std::swap(nearPlane, farPlane);
-            auto projection = XMMatrixPerspectiveFovRH(fov, (float) g.outW / g.outH, nearPlane, farPlane);
-            XMFLOAT4X4 temp;
-            XMStoreFloat4x4(&temp, projection);
-            std::memcpy(h.camera.viewToClip, &temp, sizeof(temp));
-            XMStoreFloat4x4(&temp, XMMatrixInverse(nullptr, projection));
-            std::memcpy(h.camera.clipToView, &temp, sizeof(temp));
-            XMStoreFloat4x4(&temp, XMMatrixIdentity());
-            std::memcpy(h.camera.clipToPrevious, &temp, sizeof(temp));
-            std::memcpy(h.camera.previousToClip, &temp, sizeof(temp));
-            h.camera.up[1] = h.camera.right[0] = 1;
-            h.camera.forward[2] = -1;
-            h.camera.nearPlane = nearPlane;
-            h.camera.farPlane = farPlane;
-            h.camera.fov = fov;
-            h.camera.aspect = (float) g.outW / g.outH;
-            h.camera.valid = true;
-            g.halfStatus.clear();
-            return true;
-        }
-
         void Before(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source, unsigned long long epoch,
-                    unsigned long long submittedEpoch, ID3D12CommandQueue* queue, bool privateJob = false)
+                    unsigned long long submittedEpoch, ID3D12CommandQueue* queue)
         {
             if (pending.cmd && current)
             {
@@ -1826,13 +1614,9 @@ struct DlssNr_Dx12::State
                 {
                     if (!state.pending.cmd && state.current)
                     {
-                        LOG_DEBUG("DLSS-NR deferred: Before returned without arming a seam -> reset + hold/half "
-                                  "cleared. epoch {}",
+                        LOG_DEBUG("DLSS-NR deferred: Before returned without arming a seam; reset history. epoch {}",
                                   epoch);
                         state.current->reset = true;
-                        state.current->hold.Reset();
-                        if (state.current->half)
-                            state.current->half->Reset();
                     }
                 }
             } resetOnGap { *this, epoch };
@@ -1847,8 +1631,7 @@ struct DlssNr_Dx12::State
                 return;
             }
             if (cmd->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT ||
-                (!privateJob &&
-                 (cfg.RestoreComputeSignature.value_or_default() || cfg.RestoreGraphicSignature.value_or_default()) &&
+                ((cfg.RestoreComputeSignature.value_or_default() || cfg.RestoreGraphicSignature.value_or_default()) &&
                  !D3D12Hooks::CanRestoreRootSignature(cmd)))
             {
                 Say("inactive: requires a direct command list with restorable game state");
@@ -1858,10 +1641,7 @@ struct DlssNr_Dx12::State
             auto* output = owner.GetResource(source, NVSDK_NGX_Parameter_Output, "DLSSD.Output");
             auto* depth = owner.GetResource(source, NVSDK_NGX_Parameter_Depth, "DLSSD.Depth");
             auto* motion = owner.GetResource(source, NVSDK_NGX_Parameter_MotionVectors, "DLSSD.MotionVectors");
-            const bool wantsHalf =
-                cfg.DlssNrResidualFg.value_or_default() && !privateJob && !cfg.DlssNrFinishedPicture.value_or_default();
-            const bool sampleAndHold = wantsHalf && motion == nullptr;
-            if (!color || !output || !depth || (!motion && !sampleAndHold) || color == output)
+            if (!color || !output || !depth || !motion || color == output)
             {
                 Say("inactive: distinct Color/Output, depth and motion are required");
                 return;
@@ -1907,14 +1687,10 @@ struct DlssNr_Dx12::State
                                                  : UInt(source, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags)) &
                              (NVSDK_NGX_DLSS_Feature_Flags_DepthInverted | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
                               NVSDK_NGX_DLSS_Feature_Flags_MVJittered);
-            if (sampleAndHold)
-                flags = (flags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
             if (current && (current->device != device || current->queue != ownerQueue || current->w != active->width ||
                             current->h != active->height || current->outW != outDesc.Width ||
                             current->outH != outDesc.Height || current->inputFormat != inDesc.Format ||
-                            current->outputFormat != outDesc.Format || current->flags != flags ||
-                            current->halfRequested != wantsHalf || current->sampleAndHold != sampleAndHold ||
-                            current->approximateCamera != cfg.DlssNrResidualFgApproxCamera.value_or_default()))
+                            current->outputFormat != outDesc.Format || current->flags != flags))
                 retired.push_back(std::move(current));
             if (!current)
             {
@@ -1935,9 +1711,6 @@ struct DlssNr_Dx12::State
                 current->inputFormat = inDesc.Format;
                 current->outputFormat = outDesc.Format;
                 current->flags = flags;
-                current->halfRequested = wantsHalf;
-                current->sampleAndHold = sampleAndHold;
-                current->approximateCamera = cfg.DlssNrResidualFgApproxCamera.value_or_default();
                 if (!Allocate(*current))
                 {
                     current->failed = true;
@@ -2010,22 +1783,6 @@ struct DlssNr_Dx12::State
                 }
                 owner.Barrier(cmd, g.exposure, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                if (g.sampleAndHold)
-                {
-                    g.zeroMotion = owner.CreateScratch(g.device, DXGI_FORMAT_R16G16_FLOAT, g.w, g.h);
-                    unit.Mode = DlssNrMode_ZeroMotion;
-                    unit.Width = g.w;
-                    unit.Height = g.h;
-                    if (!g.zeroMotion || !g.codec->DispatchPass(cmd, unit, g.edited, nullptr, nullptr, nullptr, nullptr,
-                                                                g.zeroMotion, nullptr))
-                    {
-                        g.failed = true;
-                        Say("sample-and-hold guide initialization failed");
-                        return;
-                    }
-                    owner.Barrier(cmd, g.zeroMotion, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                }
                 g.createEpoch = submittedEpoch;
                 Say("private DLSS created; waiting for a later submission epoch");
                 return;
@@ -2036,46 +1793,6 @@ struct DlssNr_Dx12::State
                 LOG_DEBUG("DLSS-NR deferred: waiting after feature creation at submitted epoch {}", submittedEpoch);
                 return;
             }
-
-            if (g.sampleAndHold)
-            {
-                if (g.reset || UInt(source, NVSDK_NGX_Parameter_Reset))
-                    g.hold.Reset();
-                if (g.hold.CanReuse(epoch))
-                {
-                    pending = { cmd,
-                                source,
-                                output,
-                                epoch,
-                                std::max(Float(source, NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1), 1e-4f),
-                                true,
-                                false };
-                    return; // Apply the held residual to CURRENT clean SR, not a delayed raster.
-                }
-                g.hold.Reset();
-                motion = g.zeroMotion; // private NR/SR only, with temporal history reset below.
-            }
-
-            bool half = false;
-            if (!g.sampleAndHold)
-            {
-                ScopedNrStateEnvelope envelope(cmd);
-                half = PrepareHalfRate(g, cmd, source, motion, epoch, submittedEpoch);
-            }
-            if (!half && g.half)
-                g.half->Reset();
-            if (half && g.half->havePrevious && g.half->previousWasAnchor)
-            {
-                pending = { cmd,
-                            source,
-                            output,
-                            epoch,
-                            std::max(Float(source, NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1), 1e-4f),
-                            true,
-                            true };
-                return; // NR and private residual SR are both skipped; game SR still runs normally.
-            }
-            auto* nrMotion = half ? (g.half->havePrevious ? g.half->anchorMotion : g.half->motion) : motion;
 
             const auto arrival = cfg.ColorResourceBarrier.has_value()
                                      ? (D3D12_RESOURCE_STATES) cfg.ColorResourceBarrier.value()
@@ -2089,7 +1806,6 @@ struct DlssNr_Dx12::State
 
             DlssNrFrameInfo frame {};
             frame.BeforeUpscale = frame.PrivateColorCopy = true;
-            frame.IndependentCommands = privateJob;
             frame.SubmissionEpoch = submittedEpoch;
             frame.RenderSubrectWidth = g.w;
             frame.RenderSubrectHeight = g.h;
@@ -2099,23 +1815,16 @@ struct DlssNr_Dx12::State
                                      : UInt(source, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags)) &
                  NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0 &&
                 owner.FormatCanHoldLinearHdr(outDesc.Format);
-            frame.Reset = UInt(source, NVSDK_NGX_Parameter_Reset) != 0 || g.reset || g.sampleAndHold || privateJob;
+            frame.Reset = UInt(source, NVSDK_NGX_Parameter_Reset) != 0 || g.reset;
             frame.MvScaleX = Float(source, NVSDK_NGX_Parameter_MV_Scale_X, 1);
             frame.MvScaleY = Float(source, NVSDK_NGX_Parameter_MV_Scale_Y, 1);
-            if (half)
-            {
-                frame.MvScaleX = (float) g.w;
-                frame.MvScaleY = (float) g.h;
-            }
-            if (g.sampleAndHold)
-                frame.MvScaleX = frame.MvScaleY = 1.0f;
             frame.PreExposure = std::max(Float(source, NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1), 1e-4f);
             frame.ExposureTexture = owner.GetResource(source, NVSDK_NGX_Parameter_ExposureTexture, "ExposureTexture");
             owner.nr.exposureOfferedNow = frame.ExposureTexture != nullptr;
             owner.nr.exposureEverOffered = owner.nr.exposureEverOffered || owner.nr.exposureOfferedNow;
             ++owner.nr.exposureFrames;
             const auto before = owner.nr.successfulDispatches;
-            owner.Run(cmd, g.edited, depth, nrMotion, g.edited, frame, queue);
+            owner.Run(cmd, g.edited, depth, motion, g.edited, frame, queue);
             const bool evaluated = owner.nr.successfulDispatches != before;
             if (evaluated)
             {
@@ -2152,7 +1861,7 @@ struct DlssNr_Dx12::State
                     p->Set(NVSDK_NGX_Parameter_Color, g.residualInput);
                     p->Set(NVSDK_NGX_Parameter_Output, g.residualOutput);
                     p->Set(NVSDK_NGX_Parameter_Depth, depth);
-                    p->Set(NVSDK_NGX_Parameter_MotionVectors, nrMotion);
+                    p->Set(NVSDK_NGX_Parameter_MotionVectors, motion);
                     p->Set(NVSDK_NGX_Parameter_ExposureTexture, g.exposure);
                     p->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, g.w);
                     p->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, g.h);
@@ -2162,14 +1871,13 @@ struct DlssNr_Dx12::State
                     p->Set(NVSDK_NGX_Parameter_MV_Scale_X, frame.MvScaleX);
                     p->Set(NVSDK_NGX_Parameter_MV_Scale_Y, frame.MvScaleY);
                     p->Set(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec,
-                           Float(source, NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, 16.67f) *
-                               (half && g.half->havePrevious ? 2.0f : 1.0f));
+                           Float(source, NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, 16.67f));
                     p->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
                     p->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
                     p->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
-                    pending = { cmd, source, output, epoch, frame.PreExposure, false, half };
-                    LOG_DEBUG("DLSS-NR deferred: Before armed epoch {} half {} preExp {:.4f} reset-carried {}", epoch,
-                              half, frame.PreExposure, frame.Reset);
+                    pending = { cmd, source, output, frame.PreExposure };
+                    LOG_DEBUG("DLSS-NR deferred: Before armed epoch {} preExp {:.4f} reset-carried {}", epoch,
+                              frame.PreExposure, frame.Reset);
                 }
             }
             else
@@ -2181,56 +1889,13 @@ struct DlssNr_Dx12::State
                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
 
-        // Background GPU job: produce only the DLSS-upscaled residual. No raster composition,
-        // regular FG call, or presentation operation is recorded on this queue.
-        bool ResolvePrivate(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source,
-                            [[maybe_unused]] unsigned long long epoch, ID3D12Resource* destination)
-        {
-            const auto pair = pending;
-            pending = {};
-            // No epoch match, as in After() -- see the comment there. (Dead path on this branch: async NR
-            // was removed in v0.7.1 and nothing calls ResolvePrivate; kept consistent for a future revival.)
-            if (!current || current->failed || pair.cmd != cmd || pair.caller != source)
-                return false;
-            auto& g = *current;
-            Use use(g, cmd);
-            if (!use.valid)
-            {
-                g.reset = true;
-                return false;
-            }
-            const auto result = NVNGXProxy::D3D12_EvaluateFeature()(cmd, g.feature, g.parameters, nullptr);
-            if (result != NVSDK_NGX_Result_Success)
-            {
-                g.failed = true;
-                Say("asynchronous residual DLSS evaluation failed");
-                return false;
-            }
-            owner.Barrier(cmd, g.residualOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                          D3D12_RESOURCE_STATE_COPY_SOURCE);
-            owner.Barrier(cmd, destination, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-            cmd->CopyResource(destination, g.residualOutput);
-            owner.Barrier(cmd, destination, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-            owner.Barrier(cmd, g.residualOutput, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            g.reset = false;
-            return true;
-        }
-
         void After(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source, unsigned long long epoch)
         {
             const auto pair = pending;
-            pending = {}; // Consume once, only for the immediately matching successful upscale.
-            // Match and consume the immediately preceding Before by resource identity, not Present timing.
-            // The pending epoch also owns history continuity if Present changed while DLSS was recording.
+            pending = {}; // Consume only the immediately matching successful upscale.
             if (!current || current->failed || pair.cmd != cmd || pair.caller != source ||
                 pair.output != owner.GetResource(source, NVSDK_NGX_Parameter_Output, "DLSSD.Output"))
             {
-                LOG_DEBUG("DLSS-NR deferred: After no-op -> reset. current={} failed={} cmdMatch={} callerMatch={} "
-                          "epoch(pending/now)={}/{} outputMatch={}",
-                          current != nullptr, current && current->failed, pair.cmd == cmd, pair.caller == source,
-                          pair.epoch, epoch,
-                          pair.output == owner.GetResource(source, NVSDK_NGX_Parameter_Output, "DLSSD.Output"));
                 if (current)
                     current->reset = true;
                 return;
@@ -2252,24 +1917,14 @@ struct DlssNr_Dx12::State
                 return;
             }
             ScopedNrStateEnvelope envelope(cmd);
-            if (!pair.skipNr)
+            const auto result = NVNGXProxy::D3D12_EvaluateFeature()(cmd, g.feature, g.parameters, nullptr);
+            if (result != NVSDK_NGX_Result_Success)
             {
-                const auto result = NVNGXProxy::D3D12_EvaluateFeature()(cmd, g.feature, g.parameters, nullptr);
-                if (result != NVSDK_NGX_Result_Success)
-                {
-                    g.failed = true;
-                    if (g.half)
-                        g.half->Reset();
-                    Say("private DLSS evaluation failed: " + std::to_string((unsigned) result));
-                    return;
-                }
+                g.failed = true;
+                Say("private DLSS evaluation failed: " + std::to_string((unsigned) result));
+                return;
             }
-            if (g.reset)
-                LOG_DEBUG("DLSS-NR deferred: After fed Reset=1 to the private DLSS SR this frame (history restart). "
-                          "epoch {} skipNr {} half {}",
-                          epoch, pair.skipNr, pair.half);
-            else
-                LOG_TRACE("DLSS-NR deferred: After applied epoch {} skipNr {} half {}", epoch, pair.skipNr, pair.half);
+            LOG_TRACE("DLSS-NR deferred: applied current-frame contribution at epoch {} (reset {})", epoch, g.reset);
             g.reset = false;
             if (cfg.DlssNrFinishedPicture.value_or_default())
             {
@@ -2285,61 +1940,11 @@ struct DlssNr_Dx12::State
                     g.reset = true;
                     Say("waiting to save the upscaled changes for the finished picture");
                 }
-                return; // Keep the game's SR output clean: no early composition and no second NR evaluation.
+                return; // The finished-picture path owns composition; the game's SR output stays clean.
             }
 
             owner.Barrier(cmd, g.residualOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            bool half = pair.half && g.half && !g.half->failed;
-            if (half && !pair.skipNr)
-            {
-                auto& h = *g.half;
-                owner.Barrier(cmd, h.suppression, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                              D3D12_RESOURCE_STATE_COPY_DEST);
-                cmd->CopyBufferRegion(h.suppression, 0, h.zeroUpload, 0, 256);
-                owner.Barrier(cmd, h.suppression, D3D12_RESOURCE_STATE_COPY_DEST,
-                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                if (h.interpolationReadable)
-                    owner.Barrier(cmd, h.interpolated, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                const auto result = h.fg->Evaluate(
-                    cmd, g.residualOutput, owner.GetResource(source, NVSDK_NGX_Parameter_Depth, "DLSSD.Depth"),
-                    h.havePrevious ? h.anchorMotion : h.motion, h.interpolated, h.suppression, h.camera,
-                    (g.flags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0, !h.havePrevious, h.anchorId++);
-                owner.Barrier(cmd, h.interpolated, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                h.interpolationReadable = true;
-                if (result != NVSDK_NGX_Result_Success)
-                {
-                    h.failed = true;
-                    h.Reset();
-                    half = false;
-                    g.halfStatus = "FG evaluate failed: " + std::to_string((unsigned) result);
-                }
-                else
-                {
-                    // NVIDIA writes a boolean to the first buffer byte. Copy it to R8_UNORM
-                    // for the shader: avoids CPU waiting and changing the game's predication.
-                    owner.Barrier(cmd, h.suppression, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                  D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    owner.Barrier(cmd, h.suppressionTexture,
-                                  h.suppressionReadable ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
-                                                        : D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                  D3D12_RESOURCE_STATE_COPY_DEST);
-                    D3D12_TEXTURE_COPY_LOCATION from {}, to {};
-                    from.pResource = h.suppression;
-                    from.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-                    from.PlacedFootprint.Footprint = { DXGI_FORMAT_R8_UNORM, 1, 1, 1, 256 };
-                    to.pResource = h.suppressionTexture;
-                    to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                    cmd->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
-                    owner.Barrier(cmd, h.suppressionTexture, D3D12_RESOURCE_STATE_COPY_DEST,
-                                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                    owner.Barrier(cmd, h.suppression, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                    h.suppressionReadable = true;
-                }
-            }
             const auto arrival = cfg.OutputResourceBarrier.has_value()
                                      ? (D3D12_RESOURCE_STATES) cfg.OutputResourceBarrier.value()
                                      : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -2347,45 +1952,13 @@ struct DlssNr_Dx12::State
             owner.Barrier(cmd, g.clean, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
             cmd->CopyResource(g.clean, pair.output);
             owner.Barrier(cmd, g.clean, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            ID3D12Resource* base = g.clean;
-            ID3D12Resource* residual = g.residualOutput;
-            ID3D12Resource* suppression = nullptr;
             DlssNrConstants apply {};
             apply.Mode = DlssNrMode_ApplyResidual;
             apply.Width = g.outW;
             apply.Height = g.outH;
             apply.ExposurePreMul = pair.scale;
-            if (half)
-            {
-                auto& h = *g.half;
-                if (h.havePrevious)
-                {
-                    const unsigned previous = 1 - h.writeIndex;
-                    base = h.history[previous];
-                    apply.ExposurePreMul = h.historyScale[previous];
-                    if (!pair.skipNr)
-                    {
-                        residual = h.interpolated;
-                        suppression = h.suppressionTexture;
-                        apply.Mode = DlssNrMode_ApplyInterpolatedResidual;
-                    }
-                }
-                owner.Barrier(cmd, g.clean, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                              D3D12_RESOURCE_STATE_COPY_SOURCE);
-                owner.Barrier(cmd, h.history[h.writeIndex],
-                              h.historyReadable[h.writeIndex] ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
-                                                              : D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                              D3D12_RESOURCE_STATE_COPY_DEST);
-                cmd->CopyResource(h.history[h.writeIndex], g.clean);
-                owner.Barrier(cmd, h.history[h.writeIndex], D3D12_RESOURCE_STATE_COPY_DEST,
-                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                owner.Barrier(cmd, g.clean, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                h.historyReadable[h.writeIndex] = true;
-                h.historyScale[h.writeIndex] = pair.scale;
-            }
-            const bool ok =
-                g.codec->DispatchPass(cmd, apply, base, residual, nullptr, nullptr, suppression, g.composed, nullptr);
+            const bool ok = g.codec->DispatchPass(cmd, apply, g.clean, g.residualOutput, nullptr, nullptr, nullptr,
+                                                  g.composed, nullptr);
             if (ok)
             {
                 owner.Barrier(cmd, g.composed, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -2393,63 +1966,20 @@ struct DlssNr_Dx12::State
                 cmd->CopyResource(pair.output, g.composed);
                 owner.Barrier(cmd, pair.output, D3D12_RESOURCE_STATE_COPY_DEST, arrival);
                 owner.Barrier(cmd, g.composed, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                Say(g.sampleAndHold ? "running: sample-and-hold (motion unavailable); each NR residual applied to 2 "
-                                      "current frames; no residual FG or SR delay"
-                    : half ? "running: NR every second frame + NVIDIA residual FG; SR delayed 1 frame; APPROXIMATE "
-                             "camera guides"
-                           : "running: " + std::to_string(g.w) + "x" + std::to_string(g.h) +
-                                 " contribution -> private DLSS -> " + std::to_string(g.outW) + "x" +
-                                 std::to_string(g.outH) + "; applied after SR" +
-                                 (g.halfRequested ? "; residual FG inactive: " + g.halfStatus : ""));
+                Say("running: " + std::to_string(g.w) + "x" + std::to_string(g.h) +
+                    " contribution -> private DLSS -> " + std::to_string(g.outW) + "x" + std::to_string(g.outH) +
+                    "; applied after SR");
             }
             else
             {
                 owner.Barrier(cmd, pair.output, D3D12_RESOURCE_STATE_COPY_SOURCE, arrival);
+                g.reset = true;
                 Say("composition failed; clean frame retained");
             }
             owner.Barrier(cmd, g.clean, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             owner.Barrier(cmd, g.residualOutput, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            if (g.sampleAndHold)
-            {
-                if (ok && !pair.skipNr)
-                    g.hold.SampleSucceeded(pair.epoch);
-                else
-                    g.hold.Reset();
-            }
-            if (half)
-            {
-                auto& h = *g.half;
-                owner.Barrier(cmd, h.motion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                              D3D12_RESOURCE_STATE_COPY_SOURCE);
-                owner.Barrier(cmd, h.previousMotion,
-                              h.previousReadable ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
-                                                 : D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                              D3D12_RESOURCE_STATE_COPY_DEST);
-                cmd->CopyResource(h.previousMotion, h.motion);
-                owner.Barrier(cmd, h.previousMotion, D3D12_RESOURCE_STATE_COPY_DEST,
-                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                owner.Barrier(cmd, h.motion, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                h.previousReadable = true;
-                h.havePrevious = ok;
-                h.previousWasAnchor = !pair.skipNr;
-                if (pair.skipNr)
-                    ++h.skippedNr;
-                else
-                    ++h.nrAnchors;
-                if (h.skippedNr == 8 && pair.skipNr)
-                    LOG_INFO(
-                        "Residual FG cadence: {} NR anchor frames, {} skipped NR frames; matching clean history active",
-                        h.nrAnchors, h.skippedNr);
-                h.writeIndex = 1 - h.writeIndex;
-                if (!ok)
-                {
-                    h.Reset();
-                    g.reset = true;
-                }
-            }
         }
 
         void ReleaseResources()
@@ -2470,13 +2000,7 @@ struct DlssNr_Dx12::State
     std::string SynchronousDeferredDlssStatus()
     {
         std::lock_guard<std::recursive_mutex> lock(mutex);
-        auto result = deferredSr.status;
-        if (deferredSr.current && deferredSr.current->half && deferredSr.current->half->havePrevious)
-        {
-            const auto& h = *deferredSr.current->half;
-            result += " (NR frames " + std::to_string(h.nrAnchors) + ", skipped " + std::to_string(h.skippedNr) + ")";
-        }
-        return result;
+        return deferredSr.status;
     }
 
     struct LateContext

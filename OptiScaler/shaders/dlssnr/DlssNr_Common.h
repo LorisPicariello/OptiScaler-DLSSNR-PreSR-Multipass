@@ -25,26 +25,7 @@ enum DlssNrMode : uint32_t
     DlssNrMode_Calibrate = 4,                  // the untouched frame -> a grid of tile peak luminances
     DlssNrMode_EncodeResidual = 5,             // NR-composed minus original; signed difference encoded around 0.5
     DlssNrMode_ApplyResidual = 6,              // decode private DLSS result and add to clean SR output
-    DlssNrMode_UnitExposure = 7,               // constant exposure for the private DLSS feature
-    DlssNrMode_NormalizeMotion = 8,            // current-to-previous motion in normalized image coordinates
-    DlssNrMode_ComposeMotion = 9,              // compose two successive fields at the displaced coordinate
-    DlssNrMode_ApplyInterpolatedResidual = 10, // t4: R8_UNORM NVIDIA suppression flag
-    DlssNrMode_ZeroMotion = 11                 // private reset-only NR/SR guide, never passed to residual FG
-};
-
-// A successful sample may be reused only on the immediately following frame.
-// Failed composition, cuts and gaps must not turn a two-frame hold into a freeze.
-struct DlssNrResidualHold
-{
-    uint64_t sampleEpoch = 0;
-    bool valid = false;
-    bool CanReuse(uint64_t epoch) const { return valid && epoch > sampleEpoch && epoch - sampleEpoch == 1; }
-    void SampleSucceeded(uint64_t epoch)
-    {
-        sampleEpoch = epoch;
-        valid = true;
-    }
-    void Reset() { valid = false; }
+    DlssNrMode_UnitExposure = 7                // constant exposure for the private DLSS feature
 };
 
 // The meter's grid. 64 x 64 tiles over the whole frame, whatever its size.

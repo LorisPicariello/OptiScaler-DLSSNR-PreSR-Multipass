@@ -307,4 +307,3 @@ unsigned int Context::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* devi
 }
 } // namespace Proxy
 } // namespace DlssNr
-

@@ -193,16 +193,7 @@ void RenderMenu(Config* config, float menuResScale)
                                    "controls NR placement.");
             else if (deferredDlss)
                 ImGui::TextWrapped("Residual DLSS: %s", DlssNr::DeferredDlssStatus().c_str());
-            ImGui::BeginDisabled(finishedPicture || !deferredDlss || rayReconstruction);
-            bool residualFg = config->DlssNrResidualFg.value_or_default();
-            if (ImGui::Checkbox("NR every second frame (NVIDIA FG, experimental)", &residualFg))
-                config->DlssNrResidualFg = residualFg;
-            HelpMarker("Run NR every other rendered frame and use NVIDIA FG to interpolate its changes.\nRequires the option above. Adds one rendered frame of latency and may misalign effects or UI.\nIf motion vectors are unavailable, each NR result is reused for two frames.");
-            bool approxCamera = config->DlssNrResidualFgApproxCamera.value_or_default();
-            if (ImGui::Checkbox("Allow approximate FG camera guides (experimental)", &approxCamera))
-                config->DlssNrResidualFgApproxCamera = approxCamera;
-            HelpMarker("Use estimated camera data when the game does not provide it. May cause artifacts during camera movement.");
-            ImGui::EndDisabled();
+
 
         }
         else if (beforeSr)
@@ -1104,4 +1095,3 @@ void RenderMenu(Config* config, float menuResScale)
 }
 
 } // namespace DlssNr
-

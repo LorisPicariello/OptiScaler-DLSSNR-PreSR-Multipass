@@ -55,7 +55,6 @@ Testing order for an affected machine:
 3. Try DLSS + NR in gameplay and through loading/fast travel. Attach the new log if it still crashes.
 4. Test FSR output separately to isolate the native DLSS path. Enabling DLSS as the game's input
    and choosing FSR as OptiScaler's output are different settings; state both in a report.
-5. On RTX 30, use a supported replacement FG provider if needed, not the RTX 40 MFG unlocker.
 
 Also report the driver, DLSS DLL version, NR runtime hash, real executable name and INI. Do not assume
 an out-of-memory, resource-lifetime or other loading bug is fixed just because the engine quirk is on.
@@ -74,4 +73,4 @@ cl /nologo /std:c++20 /EHsc tests\nr_skin_shader_smoke.cpp /Fe:x64\nr_skin_shade
 x64\nr_skin_shader_smoke.exe OptiScaler\shaders\dlssnr\precompile\dlssnr.hlsl
 ```
 
-RTX 40 unlocker setup and its separate source-build instructions are in [RTX40-MFG.md](RTX40-MFG.md).
+Related backend, resource-lifetime and presentation fixes are listed in [COMPATIBILITY-CHANGES.md](COMPATIBILITY-CHANGES.md).

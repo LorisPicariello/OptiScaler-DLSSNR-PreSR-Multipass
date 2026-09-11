@@ -1,6 +1,6 @@
 # Open issue review — 10 September 2026
 
-Reviewed all ten open issues and their comments against `v0.7.5-nr-fixes` (`73f26daa`). Downloaded and read the Nioh 2 log, the Stellar Blade log archive, the updated standalone source contribution and the MFG implementation linked in #12. Reporter attachments were inspected as data/source, not executed.
+Reviewed all ten open issues and their comments against `v0.7.5-nr-fixes` (`73f26daa`). Downloaded and read the Nioh 2 log, the Stellar Blade log archive, the updated standalone source contribution. Reporter attachments were inspected as data/source, not executed.
 
 | Issue | Finding and disposition |
 | --- | --- |
@@ -10,7 +10,6 @@ Reviewed all ten open issues and their comments against `v0.7.5-nr-fixes` (`73f2
 | [#7](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/issues/7) Requiem/Onimusha/Cyberpunk NR inactive | No reporter logs identify the failed stage. Hardened NGX routing and added diagnostics; requested per-game startup/reproduction logs, INI and placement details. Kept open. |
 | [#9](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/issues/9) Deferred flashing | Per-evaluate seam fix shipped in v0.7.5 through #11. Existing seam regression passes. Closed the dropout/flash report; separate fine-detail shimmer is not claimed fixed. |
 | [#10](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/issues/10) RR flicker | v0.7.3 guide fix predates current release; the older reports do not establish which problem remains. Added RR/deferred placement explanation and routing hardening. Requested a repeatable scene/settings and current evidence; kept open pending visual reproduction. |
-| [#12](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/issues/12) RTX 40 MFG plus NR | Log shows the built-in patch applied but does not prove correct MFG output. Two users report external/alternate unlockers work. Provided the existing external-FG mode and requested paired logs if needed. No RTX 40 hardware available here; kept open. |
 | [#14](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/issues/14) Before-RR option | Already implemented in v0.7.4 and present in v0.7.5. Closed the feature request, with failures tracked in #7/#10. Fixed the additional deferred-mode checkbox conflict discovered during review. |
 | [#15](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/issues/15) Reflex 2 | Kept as an enhancement. DLL availability does not supply a general late-camera-pose integration. Requested source/interface documentation; no demo binaries incorporated. |
 | [#16](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/issues/16) Nioh 2 crash | Identified a foreign-API optional-resource pointer escaping into DX12 NR. Fixed DX11 and Vulkan bridge handoffs. The crash log ends at the first exposure-processing stage with auto-exposure enabled, consistent with this defect. Kept open for reporter validation. |
@@ -43,4 +42,4 @@ The contribution remains open for a rebased integration with native handoff/time
 - `git diff --check` passed.
 - GitHub's repository-wide clang-format check fails on existing main (`73f26daa`, [run](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/actions/runs/34319077007)) as well as this branch. Applied formatting to the changed C++ ranges; unrelated repository-wide formatting remains outside this patch.
 
-Cyberpunk is installed locally, but the existing local log is from v0.7.3 and does not show RR. No fresh gameplay or visual-quality validation was performed in this session. Nioh 2, Requiem, Onimusha, Stellar Blade, Aphelion, NBA 2K26, Dawnwalker and Crimson Desert were not found in the inspected Steam libraries. The available GPU is an RTX 5090, so RTX 40 MFG results need reporter testing.
+Cyberpunk is installed locally, but the existing local log is from v0.7.3 and does not show RR. No fresh gameplay or visual-quality validation was performed in this session. Nioh 2, Requiem, Onimusha, Stellar Blade, Aphelion, NBA 2K26, Dawnwalker and Crimson Desert were not found in the inspected Steam libraries. The available GPU is an RTX 5090; other GPU families require separate validation.
