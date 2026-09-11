@@ -906,7 +906,7 @@ class NVNGXProxy
 
         _vulkanInited = (nvResult == NVSDK_NGX_Result_Success);
 
-        return true;
+        return _vulkanInited;
     }
 
     static void SetVulkanInited(bool value) { _vulkanInited = value; }

@@ -129,7 +129,7 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::Checkbox("Enable Neural Rendering", &enabled))
             config->DlssNrEnabled = enabled;
 
-        HelpMarker("Enhance lighting and material appearance with the NR model. Placement selects before or after upscaling.\nRequires nvngx_dlssnr.dll plus the included nvngx.dll_dlssnr.dll helper.");
+        HelpMarker("Enhance lighting and material appearance with the NR model. Placement selects before or after upscaling.\nRequires nvngx_dlssnr.dll and a compatible NVIDIA driver.");
 
         bool finishedPicture = config->DlssNrFinishedPicture.value_or_default();
         if (ImGui::Checkbox("Apply NR to the finished picture", &finishedPicture))
@@ -503,7 +503,7 @@ void RenderMenu(Config* config, float menuResScale)
             InheritedProfileCombo("Pass 3 preset hint", &config->DlssNrPass3Preset, inheritedPresets, IM_ARRAYSIZE(inheritedPresets));
             ImGui::TreePop();
         }
-        ImGui::TextWrapped("Pass settings apply to SR and RR on DX12 and native Vulkan. The driver-proxy backend supports one pass.");
+        ImGui::TextWrapped("Pass settings apply to SR and RR on DX12 and native Vulkan.");
 
         ImGui::SeparatorText("Colour");
 

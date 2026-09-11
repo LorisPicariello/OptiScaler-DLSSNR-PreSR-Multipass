@@ -6,19 +6,33 @@ This fork is experimental. Do not use injection mods in anti-cheat-protected mul
 
 - A 64-bit game whose temporal upscaler reaches an OptiScaler D3D12 path. Native D3D12 is preferred;
   supported D3D11 and Vulkan games can use OptiScaler's D3D12 bridges.
-- NVIDIA driver 616.56 or newer.
+- An NVIDIA driver whose installed NGX core supports Neural Rendering (feature 18).
 - The complete release archive from this repository. It includes `setup_windows.bat`, the
-  `OptiScaler` backend folder, `OptiScaler.dll`, `OptiScaler.ini`, and `nvngx.dll_dlssnr.dll`.
+  `OptiScaler` backend folder, `OptiScaler.dll`, and `OptiScaler.ini`.
 - A separately obtained `nvngx_dlssnr.dll` 310.8 runtime appropriate for the GPU.
 
-The two similarly named files are different and both are required:
+NR uses the following components. The NGX core is a normal installed driver dependency, not an
+additional file to download into the game folder:
 
 | File | Purpose |
 |---|---|
-| `nvngx.dll_dlssnr.dll` | Open-source forwarder supplied by this project |
+| OptiScaler's proxy DLL | Implements NR integration and calls the driver's NGX dispatcher |
 | `nvngx_dlssnr.dll` | NVIDIA-derived Neural Rendering runtime supplied separately by the user |
+| Installed NVIDIA NGX core | Discovers, creates and evaluates feature 18 |
+
+No separate NR helper DLL is needed. The former `nvngx.dll_dlssnr.dll` is no longer built, loaded or
+packaged; remove that obsolete file when upgrading. Ordinary OptiScaler backend dependencies remain
+in the release archive. There is no embedded, extracted or fallback helper.
+
+A Cyberpunk 2077 probe reached successful NR creation and evaluation with the helper physically absent.
+Hardware tests on RTX 5090 also passed two independent, identical-profile contexts and repeated
+evaluations on DX12 and native Vulkan. Full gameplay stability and visual correctness of this build
+remain unverified; these hardware tests used synthetic textures.
 
 ## Choose the correct runtime
+
+These hashes identify runtime variants used by earlier builds. They are not a validated support
+matrix for the mandatory driver dispatcher; the installed driver must accept the supplied runtime.
 
 | GPU | Runtime | SHA-256 |
 |---|---|---|
@@ -43,7 +57,7 @@ Get-FileHash .\nvngx_dlssnr.dll -Algorithm SHA256
 1. Close the game and its launcher.
 2. Find the directory containing the real game executable, which is often below the game's root.
 3. Back up any existing proxy DLL, `OptiScaler.ini`, and OptiScaler installation.
-4. Extract the entire release archive into that executable directory. Do not copy only the two DLLs.
+4. Extract the entire release archive into that executable directory so ordinary backend dependencies remain available.
 5. Put the correct `nvngx_dlssnr.dll` from the table above in the same directory.
 6. Run `setup_windows.bat`. It renames `OptiScaler.dll` to a proxy filename the game will load and
    creates an uninstaller. `dxgi.dll` is the usual first choice. The validated Cyberpunk 2077 setup
@@ -81,7 +95,7 @@ OptiScaler into pass-through mode, which means no menu and no Neural Rendering.
   Existing CET/RED4ext/ReShade loaders can require a different proxy or correct chaining.
 
 Do not install the RenoDX DLSS add-on merely to obtain its compatibility runtime. This OptiScaler
-fork drives `nvngx_dlssnr.dll` itself, and two Neural Rendering injectors can conflict.
+fork drives NR through the installed NVIDIA NGX dispatcher, and two Neural Rendering injectors can conflict.
 
 ## Individual pass controls
 
@@ -97,8 +111,9 @@ following local structure. The corresponding INI keys are `Pass2Intensity`, `Pas
 `Pass2LocalTone`, `Pass2SkinStructure`, and `Pass2AutoMask`, with matching `Pass3...` keys.
 Use `auto` for the default behavior. Styles retain `Pass2Style` / `Pass3Style`.
 
-These controls apply to D3D12 and native Vulkan multipass, including the D3D12 bridges and
-before/after SR or RR+SR placement. The experimental driver-proxy backend remains single-pass. Preset hints are still transmitted
+These controls configure the model passes for D3D12 and native Vulkan, including the D3D12 bridges
+and before/after SR or RR+SR placement. Start with one pass when checking a game's visual behavior.
+Preset hints are still transmitted
 at model creation, but a changed hint is not proof of a changed model. They are preserved under
 **Advanced preset hints (effect unverified)** and in the INI for compatibility.
 

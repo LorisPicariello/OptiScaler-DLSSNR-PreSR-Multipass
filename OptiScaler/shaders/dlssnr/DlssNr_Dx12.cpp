@@ -109,153 +109,12 @@ struct DlssNr_Dx12::State
         }
     }
 
-    // Does the driver's own nvngx.dll dispatch Neural Rendering?
-    //
-    // The trick is that correct parameters are not needed to find out, because the KIND of failure is
-    // the answer. A dispatcher that has never heard of feature 18 rejects it before looking at anything:
-    //
-    //   FeatureNotFound / FeatureNotSupported / NotImplemented -- the driver does not route it, and the
-    //       forwarder is necessary rather than merely tolerated.
-    //   MissingInput / InvalidParameter / UnsupportedParameter -- the driver DOES route it. It reached
-    //       the feature, which then complained about the arguments. That is the win: it means the whole
-    //       forwarder, and the per-game copy of the model, can go.
-    //   Success -- better still, though not expected from an empty parameter block.
-    //
-    // Once per session, and only when asked for.
-    void ProbeProxyDispatch(ID3D12GraphicsCommandList* cmdList)
-    {
-
-        if (done)
-            return;
-
-        done = true;
-
-        if (!NVNGXProxy::IsDx12Inited())
-        {
-            LOG_INFO("DLSS-NR proxy probe: the driver's nvngx is not initialised here, nothing to ask");
-            return;
-        }
-
-        const auto allocate = NVNGXProxy::D3D12_AllocateParameters();
-        const auto destroy = NVNGXProxy::D3D12_DestroyParameters();
-        const auto create = NVNGXProxy::D3D12_CreateFeature();
-        const auto release = NVNGXProxy::D3D12_ReleaseFeature();
-
-        if (allocate == nullptr || create == nullptr)
-        {
-            LOG_INFO("DLSS-NR proxy probe: the driver's nvngx does not export what the probe needs");
-            return;
-        }
-
-        NVSDK_NGX_Parameter* params = nullptr;
-
-        if (allocate(&params) != NVSDK_NGX_Result_Success || params == nullptr)
-        {
-            LOG_INFO("DLSS-NR proxy probe: could not allocate a parameter block");
-            return;
-        }
-
-        // Feature 18, and a feature that certainly does not exist, asked the same way.
-        //
-        // A single result cannot answer this. "UnableToInitializeFeature" for 18 looks like the
-        // dispatcher having found the feature and failed to start it on an empty parameter block -- but
-        // it might equally be what this dispatcher says about anything it cannot set up. The control
-        // settles it: if a nonsense id comes back differently, the difference is knowledge of feature
-        // 18. If both come back the same, the first result meant nothing.
-        NVSDK_NGX_Handle* handle = nullptr;
-        const auto result = (unsigned int) create(cmdList, (NVSDK_NGX_Feature) 18, params, &handle);
-
-        if (handle != nullptr && release != nullptr)
-            release(handle);
-
-        NVSDK_NGX_Handle* controlHandle = nullptr;
-        const auto control = (unsigned int) create(cmdList, (NVSDK_NGX_Feature) 200, params, &controlHandle);
-
-        if (controlHandle != nullptr && release != nullptr)
-            release(controlHandle);
-
-        LOG_INFO("DLSS-NR proxy probe: feature 18 -> 0x{:X} ({}), control feature 200 -> 0x{:X} ({})", result,
-                 NgxResultName(result), control, NgxResultName(control));
-
-        const bool rejectedOutright = result == 0xBAD00004 || result == 0xBAD00001 || result == 0xBAD00012;
-
-        if (result == control)
-            LOG_INFO("DLSS-NR proxy probe: both answers identical, so this says nothing about feature 18 "
-                     "-- the driver treats it exactly as it treats a feature that does not exist");
-        else if (rejectedOutright)
-            LOG_INFO("DLSS-NR proxy probe: feature 18 is rejected outright -- the driver does not route "
-                     "it and the forwarder is required");
-        else
-            LOG_INFO("DLSS-NR proxy probe: feature 18 answers differently from a nonexistent one, so the "
-                     "driver knows it -- the forwarder and the per-game model copy could both go");
-
-        if (destroy != nullptr)
-            destroy(params);
-    }
-
-    // Everything the model is reached through. The snippet refuses callers whose module path does not
-    // contain "nvngx.dll", so the calls are made from a small library named for exactly that reason and
-    // shipped beside OptiScaler; see nvngx.dll_dlssnr.dll.
-    using PFN_NrCreate = void*(__cdecl*) (const wchar_t*, const wchar_t*, ID3D12Device*, ID3D12GraphicsCommandList*,
-                                          void*, unsigned int, unsigned int, int, float, int, float, float, float, int,
-                                          int);
-    using PFN_NrEvaluate = int(__cdecl*)(ID3D12GraphicsCommandList*, void*, void*, ID3D12Resource*, ID3D12Resource*,
-                                         ID3D12Resource*, ID3D12Resource*, unsigned int, unsigned int, unsigned int,
-                                         unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
-                                         unsigned int, unsigned int, int, int, float, int, float, float, float, int,
-                                         float, float);
-    using PFN_NrRelease = void(__cdecl*)(void*);
-    using PFN_NrSetExtras = void(__cdecl*)(void*, float, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*,
-                                           unsigned int, unsigned int, unsigned int, unsigned int);
-    using PFN_NrSetFloatSlot = void(__cdecl*)(int);
-    using PFN_NrProbeFloat = void(__cdecl*)(void*, const char*, float, int);
-
-    // One per back buffer, so an allocator is never reset while its frame is still in flight.
-
     struct NrState
     {
         unsigned long long successfulDispatches = 0;
-        HMODULE forwarder = nullptr;
-        PFN_NrCreate create = nullptr;
-        PFN_NrEvaluate evaluate = nullptr;
-        PFN_NrRelease release = nullptr;
-        PFN_NrSetExtras setExtras = nullptr;
-        PFN_NrSetFloatSlot setFloatSlot = nullptr;
-        PFN_NrProbeFloat probeFloat = nullptr;
-        bool floatSlotKnown = false;
-
-        // The scaling-ratio probe, resolved alongside the other forwarder entry points.
-        int (*queryRatio)(const wchar_t*, void*, unsigned int, float*) = nullptr;
-        const int* lastRatioStage = nullptr;
-        int* lastInit = nullptr;
-        int* lastCreate = nullptr;
-        const char* (*lastModelError)() = nullptr;
-        std::string modelError;
-
-        NVSDK_NGX_Parameter* capabilityParams = nullptr;
-        void* feature = nullptr;
-        bool featurePendingSubmission = false;
-        unsigned long long featureCreateEpoch = 0;
-
-        // A feature per extra pass, each with its own temporal history.
-        //
-        // One feature run three times in a frame is told three frames passed with nothing moving between
-        // them, so its history fights every pass after the first -- which is what "loses detail on later
-        // passes" was. Separate features each see one frame per frame, which is the contract they were
-        // built for.
-        //
-        // It is also the only reading that fits the one clue we have about how this is done elsewhere:
-        // that implementation's memory grows with the pass count, and reusing a single feature cannot do
-        // that. A feature apiece can, because each carries its own history.
-        //
-        // Indexed by pass, so [0] is unused and the first extra pass is [1]. Wasting one pointer keeps
-        // every index here equal to the pass number it belongs to. Extra features are created on a
-        // build-only invocation and first evaluated on a later command list.
-        void* passFeature[DlssNr::MaxPassCount] = {};
-        bool passNeedsReset[DlssNr::MaxPassCount] = {};
+        // Each model pass owns its NGX feature, parameters and temporal history.
+        DlssNr::Proxy::Context models[DlssNr::MaxPassCount];
         bool passCreateFailed[DlssNr::MaxPassCount] = {};
-        bool passPendingSubmission[DlssNr::MaxPassCount] = {};
-        unsigned long long passCreateEpoch[DlssNr::MaxPassCount] = {};
 
         // The model cannot read and write one resource, so the frame is staged through these.
         ID3D12Resource* colorCopy = nullptr;
@@ -419,20 +278,12 @@ struct DlssNr_Dx12::State
         float guideMvScaleX = 1.0f;
         float guideMvScaleY = 1.0f;
 
-        // The values each live feature was created with. Preset and style may differ per layer; the
-        // remaining strengths are intentionally shared by the stack.
+        // The preset, style and strengths each live feature was created with.
         unsigned int builtPreset[DlssNr::MaxPassCount] = {};
-        float builtIntensity = 0.0f;
         NrPassTuning builtPassTuning[DlssNr::MaxPassCount] {};
         unsigned int builtStyle[DlssNr::MaxPassCount] = {};
-        float builtLocalStructure = 0.0f;
-        float builtLocalTone = 0.0f;
-        float builtSkinStructure = 0.0f;
-        bool builtAutoMask = false;
-        unsigned long long settledAt = 0;
 
-        // Once something fails there is no recovering it mid-session, and retrying every frame turns a
-        // failure into a crash. It stays off and says why.
+        // Latch failures until an explicit retry rather than recording failing GPU work every frame.
         bool failed = false;
         const char* reason = "";
     };
@@ -515,207 +366,6 @@ struct DlssNr_Dx12::State
         return wp < 0.01f ? 0.01f : (wp > 10000.0f ? 10000.0f : wp);
     }
 
-    std::filesystem::path dllDir;
-
-    std::optional<std::filesystem::path> FindNvidiaModel()
-    {
-        auto path = Util::FindFilePath(dllDir, "nvngx_dlssnr.dll");
-        if (!path.has_value())
-            path = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
-        return path;
-    }
-
-    // Loads the forwarder that owns the calls into the snippet.
-    bool EnsureForwarder()
-    {
-        if (nr.forwarder != nullptr)
-            return nr.create != nullptr && nr.evaluate != nullptr;
-
-        if (dllDir.empty())
-            dllDir = Util::DllPath().remove_filename();
-
-        // Beside OptiScaler first, then beside the executable: someone dropping this into a game folder may
-        // reasonably put it in either place.
-        auto found = Util::FindFilePath(dllDir, "nvngx.dll_dlssnr.dll");
-
-        if (!found.has_value())
-            found = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx.dll_dlssnr.dll");
-
-        if (!found.has_value())
-        {
-            LOG_ERROR("nvngx.dll_dlssnr.dll not found beside OptiScaler ({}) or the game executable", dllDir.string());
-            nr.reason = "nvngx.dll_dlssnr.dll is missing";
-            return false;
-        }
-
-        // FindFilePath hands back the file itself, not the directory holding it.
-        const auto path = found.value();
-        nr.forwarder = LoadLibraryW(path.wstring().c_str());
-
-        if (nr.forwarder == nullptr)
-        {
-            LOG_ERROR("nvngx.dll_dlssnr.dll found at {} but would not load, error {}", path.string(), GetLastError());
-            nr.reason = "nvngx.dll_dlssnr.dll would not load";
-            return false;
-        }
-
-        nr.queryRatio = (int (*)(const wchar_t*, void*, unsigned int, float*)) GetProcAddress(
-            nr.forwarder, "dlssnr_query_scaling_ratio");
-        nr.lastRatioStage = (const int*) GetProcAddress(nr.forwarder, "dlssnr_last_ratio_stage");
-
-        nr.create = (PFN_NrCreate) GetProcAddress(nr.forwarder, "dlssnr_call_create");
-        nr.evaluate = (PFN_NrEvaluate) GetProcAddress(nr.forwarder, "dlssnr_call_evaluate_v2");
-        nr.release = (PFN_NrRelease) GetProcAddress(nr.forwarder, "dlssnr_call_release");
-        // Optional: an older forwarder simply lacks it, and the model runs as before.
-        nr.setExtras = (PFN_NrSetExtras) GetProcAddress(nr.forwarder, "dlssnr_call_set_extras");
-        nr.setFloatSlot = (PFN_NrSetFloatSlot) GetProcAddress(nr.forwarder, "dlssnr_call_set_float_slot");
-        nr.probeFloat = (PFN_NrProbeFloat) GetProcAddress(nr.forwarder, "dlssnr_call_probe_float");
-        nr.lastInit = (int*) GetProcAddress(nr.forwarder, "dlssnr_call_last_init");
-        nr.lastCreate = (int*) GetProcAddress(nr.forwarder, "dlssnr_call_last_create");
-        nr.lastModelError = (const char* (*) ()) GetProcAddress(nr.forwarder, "dlssnr_call_error");
-
-        if (nr.create == nullptr || nr.evaluate == nullptr)
-        {
-            nr.reason = "Update nvngx.dll_dlssnr.dll from the complete release (NR v2 exports required)";
-            return false;
-        }
-
-        LOG_INFO("DLSS-NR forwarder loaded from {}", path.string());
-        return true;
-    }
-
-    // The model needs the driver core's own capability block: it carries the snippet and preset callbacks a
-    // feature expects at create time, which a freshly allocated block does not have.
-
-    bool EnsureCapabilityParams(ID3D12Device* device)
-    {
-        if (nr.capabilityParams != nullptr)
-            return true;
-
-        if (!NVNGXProxy::IsDx12Inited() && !NVNGXProxy::InitDx12(device))
-        {
-            nr.reason = "the NGX core would not initialise";
-            return false;
-        }
-
-        if (NVNGXProxy::D3D12_GetCapabilityParameters() == nullptr)
-        {
-            nr.reason = "the NGX core has no capability parameters";
-            return false;
-        }
-
-        if (NVNGXProxy::D3D12_GetCapabilityParameters()(&nr.capabilityParams) != NVSDK_NGX_Result_Success ||
-            nr.capabilityParams == nullptr)
-        {
-            nr.capabilityParams = nullptr;
-            nr.reason = "the NGX core refused its capability parameters";
-            return false;
-        }
-
-        // Before anything is written to it, work out where this block keeps floats.
-        DiscoverFloatSlot(nr.capabilityParams);
-
-        // Ask the model what scaling ratio it wants, once, for every quality level it might accept.
-        //
-        // Read-only and answered before any feature exists. The point is to find out whether NVIDIA's own
-        // performance mode for this model is reachable: the snippet has ComputeScalingRatioCommon and the
-        // kernel table has _ds, _upsample and _upsample_tilesync variants of every fused Swin block, which
-        // together suggest the model can run its interior below display resolution natively -- rather than
-        // being handed a picture we shrank ourselves, which costs an extra resample of the edit on the way
-        // back and quantises the Swin grid to a lattice we chose rather than the one it was trained on.
-        ReportScalingRatios();
-        return true;
-    }
-
-    // What the model says it wants to run at, per quality level. Logged once, used for nothing yet.
-    //
-    // Answered by the snippet's own callback rather than chosen by us. If it answers, NVIDIA ships a
-    // performance mode for Neural Rendering and the resolution slider is a worse hand-rolled version of
-    // it. If it does not, the slider is all there is and that is worth knowing too.
-
-    void ReportScalingRatios()
-    {
-        if (!nr.queryRatio || !nr.capabilityParams)
-            return;
-        auto snippet = Util::FindFilePath(dllDir, "nvngx_dlssnr.dll");
-
-        if (!snippet.has_value())
-            snippet = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
-
-        if (!snippet.has_value())
-            return;
-
-        static const char* kNames[] = {
-            "MaxPerf", "Balanced", "MaxQuality", "UltraPerformance", "UltraQuality", "DLAA"
-        };
-
-        char line[512] = {};
-        size_t used = 0;
-        bool any = false;
-
-        for (unsigned int q = 0; q < 6; ++q)
-        {
-            float ratio = -1.0f;
-            const int rc = nr.queryRatio(snippet->wstring().c_str(), nr.capabilityParams, q, &ratio);
-            int written = 0;
-
-            if (rc == 1)
-            {
-                any = true;
-                written = snprintf(line + used, sizeof(line) - used, "%s=%.4f ", kNames[q], ratio);
-            }
-            else if (rc == -1)
-            {
-                written = snprintf(line + used, sizeof(line) - used, "%s=refused ", kNames[q]);
-            }
-
-            if (written > 0)
-                used += (size_t) written;
-        }
-
-        if (any)
-            LOG_INFO("DLSS-NR the model's own scaling ratios: {}", line);
-        else
-            LOG_INFO("DLSS-NR scaling ratio callback not published by this snippet (stage {})",
-                     nr.lastRatioStage != nullptr ? *nr.lastRatioStage : -1);
-    }
-
-    // Works out which vtable slot this parameter block keeps floats in, by writing a known value through
-    // each candidate and asking for it back through the header's typed getter. Only a slot that returns the
-    // value it was given is accepted.
-    //
-    // Slot 1 is where the public header declares the float overload, so it is tried first and wins wherever
-    // that assumption holds. It does not hold for the driver's own block: every float written there reads
-    // back as FAIL_UnsupportedParameter while every uint lands, which is why intensity, local structure,
-    // local tone and skin structure never did anything.
-
-    void DiscoverFloatSlot(NVSDK_NGX_Parameter* params)
-    {
-        if (nr.floatSlotKnown || !params || !nr.probeFloat || !nr.setFloatSlot)
-            return;
-        nr.floatSlotKnown = true;
-
-        static const char* kProbeKey = "DLSSNR.OptiScalerFloatProbe";
-        static const int kCandidates[] = { 1, 2, 5, 6, 7, 4, 3, 0 };
-        const float expected = 0.375f; // exact in binary, so the round trip is exact or it is wrong
-
-        for (int slot : kCandidates)
-        {
-            float readBack = 0.0f;
-            nr.probeFloat(params, kProbeKey, expected, slot);
-
-            if (params->Get(kProbeKey, &readBack) == NVSDK_NGX_Result_Success && readBack == expected)
-            {
-                nr.setFloatSlot(slot);
-                LOG_INFO("DLSS-NR float parameters go through vtable slot {}", slot);
-                return;
-            }
-        }
-
-        LOG_ERROR("DLSS-NR could not find the float setter: intensity, local structure, local tone and skin "
-                  "structure will have no effect. The uint parameters still apply.");
-    }
-
     // Switching inject points changes the surface format underneath the scratch set: the finished frame
     // works in the swapchain's format, the pre-frame-generation path in the upscaler's. A stale set either
     // clamps linear HDR into an 8-bit texture -- wrong brightness until something forces a rebuild -- or
@@ -727,23 +377,11 @@ struct DlssNr_Dx12::State
     // scratch texture freed under in-flight work kills the device.
     struct NrRetired
     {
-        void* feature = nullptr;
         ID3D12Resource* resource = nullptr;
         int framesLeft = 32;
     };
 
     std::vector<NrRetired> retired;
-
-    void ParkNrFeature(void*& feature)
-    {
-        if (feature == nullptr)
-            return;
-
-        NrRetired r;
-        r.feature = feature;
-        feature = nullptr;
-        retired.push_back(r);
-    }
 
     void ParkNrResource(ID3D12Resource*& res)
     {
@@ -756,8 +394,14 @@ struct DlssNr_Dx12::State
         retired.push_back(r);
     }
 
-    void TickNrRetired()
+    bool haveRetirementEpoch = false;
+    uint64_t retirementEpoch = 0;
+    void TickNrRetired(uint64_t epoch)
     {
+        if (haveRetirementEpoch && retirementEpoch == epoch)
+            return;
+        haveRetirementEpoch = true;
+        retirementEpoch = epoch;
         for (size_t i = 0; i < retired.size();)
         {
             if (--retired[i].framesLeft > 0)
@@ -765,9 +409,6 @@ struct DlssNr_Dx12::State
                 ++i;
                 continue;
             }
-
-            if (retired[i].feature != nullptr && nr.release != nullptr)
-                nr.release(retired[i].feature);
 
             if (retired[i].resource != nullptr)
                 retired[i].resource->Release();
@@ -798,17 +439,10 @@ struct DlssNr_Dx12::State
 
         ForgetCalibration();
 
-        ParkNrFeature(nr.feature);
-        nr.featurePendingSubmission = false;
-
-        // The extras go with it: they were built for this raster and this tuning too.
-        for (unsigned int i = 1; i < DlssNr::MaxPassCount; ++i)
-        {
-            ParkNrFeature(nr.passFeature[i]);
-            nr.passNeedsReset[i] = false;
-            nr.passCreateFailed[i] = false;
-            nr.passPendingSubmission[i] = false;
-        }
+        for (auto& model : nr.models)
+            model.RetryAfterFailure();
+        std::fill(std::begin(nr.passCreateFailed), std::end(nr.passCreateFailed), false);
+        modelRunning = false;
 
         for (ID3D12Resource** r : { &nr.output, &nr.passScratch, &nr.colorCopy, &nr.hdrCopy, &nr.colorSmall,
                                     &nr.outputNative, &nr.activeColor, &nr.residualEdited, &nr.residualHistory[0],
@@ -1349,30 +983,13 @@ struct DlssNr_Dx12::State
         return nullptr;
     }
 
-    // A change has to hold still before it is acted on: a slider being dragged reports a new value every
-    // frame, and each one would otherwise mean a new model.
-    static constexpr unsigned long long kSettleFrames = 30;
-
-    // The extras the official integration sets: global tone (read at create) and the interface inputs.
-    // Written before every create and evaluate, nulls included, so nothing stale ever sits in the block.
-    void SetExtras(const Config& cfg, ID3D12Resource* ui, ID3D12Resource* backbuffer, unsigned int uiWidth,
-                   unsigned int uiHeight, unsigned int bbWidth, unsigned int bbHeight)
-    {
-        if (nr.setExtras == nullptr || nr.capabilityParams == nullptr)
-            return;
-
-        // Global tone is written at the model's own default: the control that exposed it changed nothing
-        // that could be seen, and the block persists, so a value still has to be put there.
-        nr.setExtras(nr.capabilityParams, 1.0f, ui, ui, backbuffer, uiWidth, uiHeight, bbWidth, bbHeight);
-    }
-
     bool TuningMatchesFeature(const Config& cfg, unsigned int requestedPasses)
     {
         for (unsigned int pass = 0; pass < requestedPasses; ++pass)
         {
             // A profile cannot be stale until its feature exists. This lets a user prepare pass 2 or 3
             // while running fewer layers without needlessly rebuilding pass 1.
-            if (pass > 0 && nr.passFeature[pass] == nullptr)
+            if (!nr.models[pass].HasFeature())
                 continue;
 
             if (nr.builtPassTuning[pass] != PassTuning(cfg, pass) || nr.builtPreset[pass] != PassPreset(cfg, pass) ||
@@ -1381,18 +998,6 @@ struct DlssNr_Dx12::State
         }
 
         return true;
-    }
-
-    void RecordBuiltPrimaryTuning(const Config& cfg)
-    {
-        nr.builtPassTuning[0] = PassTuning(cfg, 0);
-        nr.builtPreset[0] = PassPreset(cfg, 0);
-        nr.builtIntensity = cfg.DlssNrIntensity.value_or_default();
-        nr.builtStyle[0] = PassStyle(cfg, 0);
-        nr.builtLocalStructure = cfg.DlssNrLocalStructure.value_or_default();
-        nr.builtLocalTone = cfg.DlssNrLocalTone.value_or_default();
-        nr.builtSkinStructure = cfg.DlssNrSkinStructure.value_or_default();
-        nr.builtAutoMask = cfg.DlssNrAutoMask.value_or_default();
     }
 
     // Guards the module's state. Every caller is now on the game's render thread, so this is no longer
@@ -1622,12 +1227,11 @@ struct DlssNr_Dx12::State
             } resetOnGap { *this, epoch };
             Collect();
             const auto& cfg = *Config::Instance();
-            if (cfg.DlssNrUseProxy.value_or_default() || cfg.DlssNrHoldFrame.value_or_default() ||
-                cfg.DlssNrDebugView.value_or_default() != 0 || cfg.DlssNrCompare.value_or_default() != 0 ||
-                cfg.DlssNrShowSkinMask.value_or_default() ||
+            if (cfg.DlssNrHoldFrame.value_or_default() || cfg.DlssNrDebugView.value_or_default() != 0 ||
+                cfg.DlssNrCompare.value_or_default() != 0 || cfg.DlssNrShowSkinMask.value_or_default() ||
                 (!cfg.DlssNrApplyModel.value_or_default() && !cfg.DlssNrFinishedPicture.value_or_default()))
             {
-                Say("inactive: disable proxy backend, frame hold/debug/compare, and enable Apply model");
+                Say("inactive: disable frame hold/debug/compare, and enable Apply model");
                 return;
             }
             if (cmd->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT ||
@@ -2650,34 +2254,16 @@ struct DlssNr_Dx12::State
                      guideWidth, guideHeight, width, height);
         }
 
-        if (cfg.DlssNrProxyProbe.value_or_default())
-            ProbeProxyDispatch(cmdList);
-
         const unsigned int configuredPasses =
             std::clamp(cfg.DlssNrPasses.value_or_default(), 1u,
                        cfg.DlssNrUnlockPasses.value_or_default() ? DlssNr::MaxPassCount : DlssNr::DefaultMaxPassCount);
-        const bool proxyBackend = cfg.DlssNrUseProxy.value_or_default() && configuredPasses == 1;
         const unsigned int requestedPasses = configuredPasses;
-        if (cfg.DlssNrUseProxy.value_or_default() && configuredPasses > 1 && !warnedProxyPasses)
-        {
-            warnedProxyPasses = true;
-            LOG_WARN("DLSS-NR: {} model passes require the direct backend; using it instead of the driver proxy",
-                     configuredPasses);
-        }
-        if (usingProxy != proxyBackend)
-        {
-            ParkNrFeature(nr.feature);
-            for (unsigned pass = 1; pass < DlssNr::MaxPassCount; ++pass)
-                ParkNrFeature(nr.passFeature[pass]);
-            proxy.RetryAfterFailure();
-            proxyRunning = false;
-            nr.reset = true;
-            usingProxy = proxyBackend;
-        }
-        if (proxyBackend ? (!NVNGXProxy::IsDx12Inited() && !NVNGXProxy::InitDx12(device)) || !proxy.Available()
-                         : (!EnsureForwarder() || !EnsureCapabilityParams(device)))
+        for (auto& model : nr.models)
+            model.AdvanceEpoch(frame.SubmissionEpoch);
+        if ((!NVNGXProxy::IsDx12Inited() && !NVNGXProxy::InitDx12(device)) || !DlssNr::Proxy::Context::Available())
         {
             nr.failed = true;
+            nr.reason = "the NVIDIA NGX driver does not provide Neural Rendering";
             LOG_ERROR("DLSS-NR unavailable: {}", nr.reason);
             device->Release();
             return;
@@ -2710,20 +2296,15 @@ struct DlssNr_Dx12::State
         if (tuningChanged)
             nr.residualHistoryPrimed = false;
 
-        if (resolutionChanged || placementChanged || (nr.feature != nullptr && tuningChanged))
+        if (resolutionChanged || placementChanged || (nr.models[0].HasFeature() && tuningChanged))
         {
             // Parked rather than released: with frame generation the GPU can still be several frames
             // deep in work that references all of it.
-            ParkNrFeature(nr.feature);
-            nr.featurePendingSubmission = false;
-
-            for (unsigned int i = 1; i < DlssNr::MaxPassCount; ++i)
-            {
-                ParkNrFeature(nr.passFeature[i]);
-                nr.passNeedsReset[i] = false;
-                nr.passCreateFailed[i] = false;
-                nr.passPendingSubmission[i] = false;
-            }
+            for (auto& model : nr.models)
+                model.RetryAfterFailure();
+            std::fill(std::begin(nr.passCreateFailed), std::end(nr.passCreateFailed), false);
+            nr.reset = true;
+            modelRunning = false;
 
             // Resolution and seam changes invalidate the scratch state. Tuning does not, and throwing
             // resources away for it would mean a reallocation every time a slider moves.
@@ -2860,180 +2441,54 @@ struct DlssNr_Dx12::State
                 LOG_INFO("DLSS-NR: white point meter up, {}x{} tiles", kDlssNrMeterGrid, kDlssNrMeterGrid);
         }
 
-        if (!proxyBackend && nr.feature == nullptr && nr.output != nullptr && nr.colorCopy != nullptr &&
-            nr.hdrCopy != nullptr)
+        if (!nr.output || !nr.colorCopy || !nr.hdrCopy)
         {
-            auto snippet = FindNvidiaModel();
-
-            if (!snippet.has_value())
-            {
-                nr.failed = true;
-                nr.reason = "nvngx_dlssnr.dll was not found beside OptiScaler or the game";
-                LOG_ERROR("DLSS-NR unavailable: {}", nr.reason);
-                device->Release();
-                return;
-            }
-
-            SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
-            const auto tuning = PassTuning(cfg, 0);
-            nr.feature = nr.create(snippet->wstring().c_str(), ::State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                                   device, cmdList, nr.capabilityParams, workWidth, workHeight,
-                                   (int) PassPreset(cfg, 0), tuning.intensity, (int) PassStyle(cfg, 0),
-                                   tuning.structure, tuning.tone, tuning.skin, tuning.autoMask ? 1 : 0,
-                                   // UI correction at the model's own default: with no UI layer fed to it there
-                                   // is nothing for it to correct.
-                                   1);
-
-            if (nr.feature == nullptr)
-            {
-                nr.featurePendingSubmission = false;
-                nr.failed = true;
-                nr.reason = "the model would not initialise";
-                if (nr.lastModelError && *nr.lastModelError())
-                {
-                    nr.modelError = nr.lastModelError();
-                    nr.reason = nr.modelError.c_str();
-                }
-                const auto initResult = (unsigned int) (nr.lastInit != nullptr ? *nr.lastInit : 0);
-                const auto createResult = (unsigned int) (nr.lastCreate != nullptr ? *nr.lastCreate : 0);
-
-                // Cast before formatting. These are ints, and "0x{:X}" on a negative int prints
-                // 0x-452FFFFF, which no one can decode back to 0xBAD00001.
-                LOG_ERROR("DLSS-NR create failed: init 0x{:X} ({}), create 0x{:X} ({})", initResult,
-                          NgxResultName(initResult), createResult, NgxResultName(createResult));
-                device->Release();
-                return;
-            }
-
-            nr.width = width;
-            nr.height = height;
-            nr.beforeUpscale = frame.BeforeUpscale;
-            nr.rayReconstruction = frame.RayReconstruction;
-            nr.reset = true;
-            nr.featurePendingSubmission = true;
-            nr.featureCreateEpoch = frame.SubmissionEpoch;
-            RecordBuiltPrimaryTuning(cfg);
-            LOG_INFO("DLSS-NR model feature created from {}", snippet->string());
-            LOG_INFO("DLSS-NR running {}: target {}x{}, model {}x{}, guides {}x{} "
-                     "(preset {}, intensity {}, style {}, build epoch {})",
-                     frame.RayReconstruction ? (frame.BeforeUpscale ? "before RR+SR" : "after RR+SR")
-                                             : (frame.BeforeUpscale ? "before SR" : "after SR"),
-                     width, height, workWidth, workHeight, guideWidth, guideHeight, nr.builtPreset[0],
-                     nr.builtIntensity, nr.builtStyle[0], frame.SubmissionEpoch);
-
-            // Creating and evaluating a feature in the same command list is the dice-roll that hung the
-            // GPU (every crash died on a creation frame). The creation goes through the game's own submit
-            // first; the first evaluate happens next frame. One frame without the model is invisible.
+            nr.failed = true;
+            nr.reason = "the Neural Rendering staging textures could not be allocated";
             device->Release();
             return;
         }
 
-        if (!proxyBackend && nr.feature == nullptr)
+        // Prepare at most one missing layer per submission. Repeated CPU calls in the same epoch
+        // cannot evaluate creation work or create another layer before the first one is submitted.
+        for (unsigned int pass = requestedPasses; pass < DlssNr::MaxPassCount; ++pass)
         {
-            device->Release();
-            return;
+            nr.models[pass].RetryAfterFailure();
+            nr.passCreateFailed[pass] = false;
         }
-
-        // A later function call is not proof that the command list containing CreateFeature was
-        // submitted: some engines record more than one upscale on the same list. Native DX12 supplies
-        // the wrapped Present count and the bridges supply their post-Execute frame counter, so an epoch
-        // change is the first point at which evaluating the feature is safe.
-        if (!proxyBackend && nr.featurePendingSubmission)
+        const auto modelSettings = [&](unsigned int pass)
         {
-            if (frame.SubmissionEpoch == nr.featureCreateEpoch)
+            const auto tuning = PassTuning(cfg, pass);
+            return DlssNr::Proxy::Settings { PassPreset(cfg, pass), PassStyle(cfg, pass), tuning.intensity,
+                                             tuning.structure,      tuning.tone,          tuning.skin,
+                                             tuning.autoMask };
+        };
+        const unsigned int buildPasses = nr.passScratch ? requestedPasses : 1;
+        for (unsigned int pass = 0; pass < buildPasses; ++pass)
+        {
+            if (nr.passCreateFailed[pass])
+                break;
+            bool ready = false;
+            const auto prepared = nr.models[pass].Prepare(cmdList, device, workWidth, workHeight, modelSettings(pass),
+                                                          frame.SubmissionEpoch, &ready);
+            if (prepared != NVSDK_NGX_Result_Success)
             {
+                nr.passCreateFailed[pass] = true;
+                if (pass == 0)
+                {
+                    nr.failed = true;
+                    nr.reason = "the NVIDIA NGX driver could not create Neural Rendering";
+                }
+                LOG_ERROR("DLSS-NR driver creation for pass {} failed: 0x{:X} ({})", pass + 1, prepared,
+                          NgxResultName(prepared));
                 device->Release();
                 return;
             }
-
-            nr.featurePendingSubmission = false;
-            LOG_INFO("DLSS-NR: primary feature ready after submitted epoch {}", nr.featureCreateEpoch);
-        }
-
-        // Park no-longer-requested feature histories immediately (their actual release remains deferred),
-        // and clear their failure latch so a later 1 -> N change is a deliberate retry.
-        for (unsigned int pass = 1; pass < DlssNr::MaxPassCount; ++pass)
-        {
-            if (pass >= requestedPasses)
+            nr.builtPreset[pass] = PassPreset(cfg, pass);
+            nr.builtPassTuning[pass] = PassTuning(cfg, pass);
+            nr.builtStyle[pass] = PassStyle(cfg, pass);
+            if (!ready)
             {
-                ParkNrFeature(nr.passFeature[pass]);
-                nr.passNeedsReset[pass] = false;
-                nr.passCreateFailed[pass] = false;
-                nr.passPendingSubmission[pass] = false;
-            }
-        }
-
-        // Do not create another feature, and do not evaluate any feature, while a requested layer still
-        // belongs to the current submission epoch. This keeps multiple upscaler evaluations recorded on
-        // one command list from recreating the historical create/evaluate GPU hang.
-        for (unsigned int pass = 1; pass < requestedPasses; ++pass)
-        {
-            if (!nr.passPendingSubmission[pass])
-                continue;
-
-            if (frame.SubmissionEpoch == nr.passCreateEpoch[pass])
-            {
-                device->Release();
-                return;
-            }
-
-            nr.passPendingSubmission[pass] = false;
-            LOG_INFO("DLSS-NR: feature for pass {} ready after submitted epoch {}", pass + 1, nr.passCreateEpoch[pass]);
-        }
-
-        // Build at most one missing extra feature on this invocation and evaluate nothing afterwards.
-        // NGX feature creation records work on the supplied command list; evaluating that feature before
-        // the list has been submitted is the creation-frame GPU hang that caused the old multi-pass path
-        // to be removed. A new feature therefore gets an entire build-only frame and starts next time.
-        if (nr.passScratch != nullptr)
-        {
-            for (unsigned int pass = 1; pass < requestedPasses; ++pass)
-            {
-                if (nr.passFeature[pass] != nullptr)
-                    continue;
-
-                if (nr.passCreateFailed[pass])
-                    break;
-
-                auto snippet = FindNvidiaModel();
-
-                if (!snippet.has_value())
-                {
-                    nr.passCreateFailed[pass] = true;
-                    LOG_ERROR("DLSS-NR: pass {} feature not built because {} disappeared", pass + 1,
-                              "nvngx_dlssnr.dll");
-                }
-                else
-                {
-                    SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
-                    const auto tuning = PassTuning(cfg, pass);
-                    nr.passFeature[pass] =
-                        nr.create(snippet->wstring().c_str(), ::State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                                  device, cmdList, nr.capabilityParams, workWidth, workHeight,
-                                  (int) PassPreset(cfg, pass), tuning.intensity, (int) PassStyle(cfg, pass),
-                                  tuning.structure, tuning.tone, tuning.skin, tuning.autoMask ? 1 : 0, 1);
-
-                    if (nr.passFeature[pass] != nullptr)
-                    {
-                        nr.builtPreset[pass] = PassPreset(cfg, pass);
-                        nr.builtPassTuning[pass] = tuning;
-                        nr.builtStyle[pass] = PassStyle(cfg, pass);
-                        nr.passNeedsReset[pass] = true;
-                        nr.passPendingSubmission[pass] = true;
-                        nr.passCreateEpoch[pass] = frame.SubmissionEpoch;
-                        LOG_INFO("DLSS-NR: feature for pass {} built with preset {}, style {} at epoch {}; "
-                                 "waiting for submission",
-                                 pass + 1, nr.builtPreset[pass], nr.builtStyle[pass], frame.SubmissionEpoch);
-                    }
-                    else
-                    {
-                        nr.passPendingSubmission[pass] = false;
-                        nr.passCreateFailed[pass] = true;
-                        LOG_ERROR("DLSS-NR: feature for pass {} failed to build; using {} ready pass(es)", pass + 1,
-                                  pass);
-                    }
-                }
-
                 device->Release();
                 return;
             }
@@ -3075,7 +2530,7 @@ struct DlssNr_Dx12::State
         // of the game's exposure rather than a number worth asking anyone to guess: measured means of 0.065,
         // 1.8 and 185 have all been seen in this one game.
         ++frames;
-        TickNrRetired();
+        TickNrRetired(frame.SubmissionEpoch);
         CheckCaptureTrigger();
 
         if (captureWriteAtFrame != 0 && frames >= captureWriteAtFrame)
@@ -3397,18 +2852,9 @@ struct DlssNr_Dx12::State
         }
 
         // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
-        // The vectors were scaled to full-frame pixels; the image the model reprojects is the
-        // working size.
         const float mvToWorkX = width != 0 ? (float) workWidth / (float) width : 1.0f;
         const float mvToWorkY = height != 0 ? (float) workHeight / (float) height : 1.0f;
 
-        SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
-
-        // The proxy path, when asked for. Same inputs, same model -- the difference is who calls it.
-        //
-        // Nothing falls back automatically. A silent fallback would mean never finding out the proxy
-        // path was broken: the picture would look right either way, because the forwarder would be
-        // quietly doing the work.
         if (ngxTime != nullptr)
             ngxTime->Start(cmdList);
 
@@ -3420,7 +2866,7 @@ struct DlssNr_Dx12::State
         {
             for (unsigned int pass = 1; pass < requestedPasses; ++pass)
             {
-                if (nr.passFeature[pass] == nullptr || nr.passPendingSubmission[pass])
+                if (!nr.models[pass].Ready(frame.SubmissionEpoch))
                     break;
                 ++effectivePasses;
             }
@@ -3472,38 +2918,19 @@ struct DlssNr_Dx12::State
 
         for (unsigned int pass = 0; pass < effectivePasses && result == NVSDK_NGX_Result_Success; ++pass)
         {
-            void* const passFeature = pass == 0 ? nr.feature : nr.passFeature[pass];
-            const bool passReset = nr.reset || (pass > 0 && nr.passNeedsReset[pass]);
-            const auto tuning = PassTuning(cfg, pass);
-
             MakeModelWritable(passOutput);
-            bool evaluated = true;
-            if (proxyBackend)
-            {
-                result = static_cast<int>(proxy.Run(cmdList, device, passInput, depthIn, motionIn, passOutput,
-                                                    workWidth, workHeight, guideWidth, guideHeight, motionWidth,
-                                                    motionHeight, depthBaseX, depthBaseY, motionBaseX, motionBaseY,
-                                                    nr.guideDepthInverted, passReset, nr.guideMvScaleX * mvToWorkX,
-                                                    nr.guideMvScaleY * mvToWorkY, &evaluated));
-                proxyRunning = evaluated && result == NVSDK_NGX_Result_Success;
-            }
-            else
-            {
-                result = nr.evaluate(
-                    cmdList, passFeature, nr.capabilityParams, passInput, depthIn, motionIn, passOutput, workWidth,
-                    workHeight, guideWidth, guideHeight, motionWidth, motionHeight, depthBaseX, depthBaseY, motionBaseX,
-                    motionBaseY, nr.guideDepthInverted ? 1 : 0, passReset ? 1 : 0, tuning.intensity,
-                    (int) PassStyle(cfg, pass), tuning.structure, tuning.tone, tuning.skin, tuning.autoMask ? 1 : 0,
-                    nr.guideMvScaleX * mvToWorkX, nr.guideMvScaleY * mvToWorkY);
-            }
+            bool evaluated = false;
+            result = static_cast<int>(nr.models[pass].Run(
+                cmdList, device, passInput, depthIn, motionIn, passOutput, workWidth, workHeight, guideWidth,
+                guideHeight, motionWidth, motionHeight, depthBaseX, depthBaseY, motionBaseX, motionBaseY,
+                nr.guideDepthInverted, nr.reset, nr.guideMvScaleX * mvToWorkX, nr.guideMvScaleY * mvToWorkY,
+                modelSettings(pass), frame.SubmissionEpoch, &evaluated));
+            modelRunning = evaluated && result == NVSDK_NGX_Result_Success;
             if (!evaluated)
                 break;
 
             if (result != NVSDK_NGX_Result_Success)
                 break;
-
-            if (pass > 0)
-                nr.passNeedsReset[pass] = false;
 
             finalAnswer = passOutput;
             MakeModelReadable(finalAnswer);
@@ -3532,49 +2959,6 @@ struct DlssNr_Dx12::State
                          workWidth, workHeight, (float) workWidth / (float) width, width, height, result,
                          NgxResultName((unsigned int) result));
             }
-        }
-
-        // Once, a few seconds in, so it lands after the values have been written at least once.
-
-        if (!proxyBackend && !tuningReported && frames > 240)
-        {
-            tuningReported = true;
-
-            // This checks the parameter table, not whether the neural network uses a
-            // setting. Multipass leaves the final pass's values in this shared table.
-            auto report = [this](const char* name, float wrote)
-            {
-                float value = 0.0f;
-                const NVSDK_NGX_Result r = nr.capabilityParams->Get(name, &value);
-                LOG_INFO("DLSS-NR readback {} -> {} (we wrote {}, result 0x{:X})", name, value, wrote, (uint32_t) r);
-            };
-
-            const auto lastTuning = PassTuning(cfg, effectivePasses - 1);
-            LOG_INFO("DLSS-NR parameter-table readback for pass {} (not proof of visual effect)", effectivePasses);
-            report("DLSSNR.Intensity", lastTuning.intensity);
-            report("DLSSNR.LocalStructureStrength", lastTuning.structure);
-            report("DLSSNR.LocalToneStrength", lastTuning.tone);
-            report("DLSSNR.SkinStructureStrength", lastTuning.skin);
-            unsigned int autoMask = 0;
-            const auto maskResult = nr.capabilityParams->Get("DLSSNR.UseAutoMask", &autoMask);
-            LOG_INFO("DLSS-NR AutoMask readback: {} (wrote {}, result 0x{:X})", autoMask, lastTuning.autoMask,
-                     (uint32_t) maskResult);
-
-            unsigned int style = 0;
-            const NVSDK_NGX_Result styleResult = nr.capabilityParams->Get("DLSSNR.Style", &style);
-            LOG_DEBUG("DLSS-NR readback DLSSNR.Style -> {} (result 0x{:X})", style, (uint32_t) styleResult);
-
-            // The preset is the last control whose arrival has never been checked, and three of them look
-            // identical in play. Either it is not landing or the presets really are alike.
-            unsigned int preset = 0;
-            const NVSDK_NGX_Result presetResult = nr.capabilityParams->Get("DLSSNR.Hint.Render.Preset", &preset);
-            LOG_DEBUG("DLSS-NR readback DLSSNR.Hint.Render.Preset -> {} (result 0x{:X}, we wrote {})", preset,
-                      (uint32_t) presetResult, PassPreset(cfg, 0));
-
-            LOG_DEBUG("DLSS-NR wrote intensity {}, local structure {}, local tone {}, skin {}, style {}",
-                      cfg.DlssNrIntensity.value_or_default(), cfg.DlssNrLocalStructure.value_or_default(),
-                      cfg.DlssNrLocalTone.value_or_default(), cfg.DlssNrSkinStructure.value_or_default(),
-                      PassStyle(cfg, 0));
         }
 
         if (result == NVSDK_NGX_Result_Success && finalAnswer != nullptr)
@@ -3766,11 +3150,7 @@ struct DlssNr_Dx12::State
         {
             nr.failed = true;
             nr.reason = "the model refused to run";
-            if (nr.lastModelError && *nr.lastModelError())
-            {
-                nr.modelError = nr.lastModelError();
-                nr.reason = nr.modelError.c_str();
-            }
+
             LOG_ERROR("DLSS-NR evaluate returned 0x{:X} ({}), disabling for this session", (uint32_t) result,
                       NgxResultName((unsigned int) result));
         }
@@ -4361,131 +3741,6 @@ struct DlssNr_Dx12::State
 
     // The pass. Resources in, nothing read from anywhere the caller cannot see.
 
-    void ProbeD3D11(void* d3d11Device)
-    {
-
-        bool dx11Probed = false;
-
-        if (done || d3d11Device == nullptr)
-            return;
-
-        // Every other entry point in this file takes the lock before touching nr; this one was reaching
-        // EnsureForwarder without it.
-        std::lock_guard<std::recursive_mutex> nrLock(mutex);
-
-        // Opt in only. See the note on DlssNrProbeD3D11: this is the one call in the pass that reaches
-        // into a subsystem on the game's own device rather than reading something we already hold.
-        if (!Config::Instance()->DlssNrProbeD3D11.value_or_default())
-            return;
-
-        dx11Probed = true;
-
-        if (!EnsureForwarder())
-            return;
-
-        auto probe = (int (*)(const wchar_t*)) GetProcAddress(nr.forwarder, "dlssnr_d3d11_probe");
-        auto init = (int (*)(const wchar_t*, const wchar_t*, void*, int, int*, int*)) GetProcAddress(
-            nr.forwarder, "dlssnr_d3d11_init");
-
-        if (probe == nullptr || init == nullptr)
-        {
-            LOG_INFO("DLSS-NR D3D11: this forwarder has no D3D11 probe");
-            return;
-        }
-
-        auto snippet = Util::FindFilePath(dllDir, "nvngx_dlssnr.dll");
-
-        if (!snippet.has_value())
-            snippet = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
-
-        if (!snippet.has_value())
-            return;
-
-        // Four bits, one per entry point: init 1, create 2, evaluate 4, release 8.
-        const int bits = probe(snippet->wstring().c_str());
-
-        // And the question NGX has an API for. Asked first because it creates nothing: if the feature
-        // declines D3D11 here, that is the feature's own answer rather than our reading of a failed init.
-        auto requirements = (int (*)(const wchar_t*, void*, unsigned int*, unsigned int*,
-                                     unsigned int*)) GetProcAddress(nr.forwarder, "dlssnr_d3d11_requirements");
-
-        if (requirements != nullptr)
-        {
-            // The adapter the game is actually running on. Without it the query answers
-            // AdapterUnsupported, which looks like a verdict on the hardware and is really a verdict on
-            // the question -- that is what the first attempt got, on a 5080.
-            IDXGIAdapter* adapter = nullptr;
-            IDXGIFactory1* factory = nullptr;
-
-            if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) && factory != nullptr)
-                factory->EnumAdapters(0, &adapter);
-
-            unsigned int supported = 0xFFFFFFFFu;
-            unsigned int minArch = 0;
-            unsigned int minOs = 0;
-            const int rc = requirements(snippet->wstring().c_str(), adapter, &supported, &minArch, &minOs);
-
-            const char* meaning = supported == 0     ? "SUPPORTED"
-                                  : (supported & 16) ? "NotImplemented -- the feature has no D3D11 path"
-                                  : (supported & 4)  ? "AdapterUnsupported"
-                                  : (supported & 2)  ? "DriverVersionUnsupported"
-                                  : (supported & 8)  ? "OSVersionBelowMinimum"
-                                  : (supported & 1)  ? "CheckNotPresent"
-                                                     : "unknown";
-
-            LOG_WARN("DLSS-NR D3D11: GetFeatureRequirements {} ({}), FeatureSupported 0x{:X} -- {}. "
-                     "minimum architecture 0x{:X}, minimum OS 0x{:X}",
-                     rc, NgxResultName((unsigned int) rc), supported, meaning, minArch, minOs);
-
-            if (adapter != nullptr)
-                adapter->Release();
-
-            if (factory != nullptr)
-                factory->Release();
-        }
-
-        LOG_INFO("DLSS-NR D3D11: entry points resolved {}/15 (init {}, create {}, evaluate {}, release {})", bits,
-                 (bits & 1) ? "yes" : "no", (bits & 2) ? "yes" : "no", (bits & 4) ? "yes" : "no",
-                 (bits & 8) ? "yes" : "no");
-
-        if (bits != 15)
-        {
-            LOG_INFO("DLSS-NR D3D11: incomplete surface, the bridge stays the only route");
-            return;
-        }
-
-        // Four ways of asking, since the feature has already said it supports this platform.
-        int attempt = 0;
-        int results[4] = { -9, -9, -9, -9 };
-
-        const int result = init(snippet->wstring().c_str(), ::State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                                d3d11Device, 0x0000015, &attempt, results);
-
-        static const char* kNames[4] = { "Init_Ext on our own copy", "Init on our own copy",
-                                         "Init_Ext on the shared module", "Init on the shared module" };
-
-        for (int i = 0; i < 4; ++i)
-        {
-            LOG_INFO("DLSS-NR D3D11:   {} -> {} ({})", kNames[i], results[i],
-                     results[i] == -2   ? "module not loaded"
-                     : results[i] == -3 ? "export missing"
-                     : results[i] == -9 ? "not reached"
-                                        : NgxResultName((unsigned int) results[i]));
-        }
-
-        if (result == 1)
-            LOG_WARN("DLSS-NR D3D11: initialised, via {}. The feature already said this platform is "
-                     "supported; now the call works too. Next is a feature create on a device context.",
-                     attempt > 0 ? kNames[attempt - 1] : "?");
-        else
-            // Deliberately not "so the bridge is required". GetFeatureRequirements answers 0x0 SUPPORTED
-            // with a minimum architecture this card meets, so the platform is not the obstacle and saying
-            // otherwise here would be printing a conclusion the evidence does not carry.
-            LOG_WARN("DLSS-NR D3D11: every init variant refused, last {} ({}) -- though the feature itself "
-                     "reports this platform as supported, so the obstacle is in how it is being called",
-                     result, NgxResultName((unsigned int) result));
-    }
-
     DlssNr::CalibrationReading Calibration()
     {
         CalibrationReading r {};
@@ -4507,8 +3762,6 @@ struct DlssNr_Dx12::State
 
         for (auto& r : retired)
         {
-            if (r.feature != nullptr && nr.release != nullptr)
-                nr.release(r.feature);
 
             if (r.resource != nullptr)
                 r.resource->Release();
@@ -4516,23 +3769,10 @@ struct DlssNr_Dx12::State
 
         retired.clear();
 
-        if (nr.feature != nullptr && nr.release != nullptr)
-            nr.release(nr.feature);
-
-        nr.feature = nullptr;
-        nr.featurePendingSubmission = false;
-
-        for (unsigned int pass = 1; pass < DlssNr::MaxPassCount; ++pass)
-        {
-            void*& f = nr.passFeature[pass];
-            if (f != nullptr && nr.release != nullptr)
-                nr.release(f);
-
-            f = nullptr;
-            nr.passNeedsReset[pass] = false;
-            nr.passCreateFailed[pass] = false;
-            nr.passPendingSubmission[pass] = false;
-        }
+        for (auto& model : nr.models)
+            model.Release();
+        std::fill(std::begin(nr.passCreateFailed), std::end(nr.passCreateFailed), false);
+        modelRunning = false;
 
         if (nr.output != nullptr)
         {
@@ -4712,11 +3952,8 @@ struct DlssNr_Dx12::State
         bool autoFlag;
     };
     ExposureReport logged {};
-    bool done = false;
-    bool dx11Probed = false;
     std::set<std::string> seen;
     unsigned long long resets = 0;
-    bool warnedProxyPasses = false;
     bool reportedHdr = false;
     bool reportedHdrValue = false;
     bool reportedBefore = false;
@@ -4724,7 +3961,6 @@ struct DlssNr_Dx12::State
     unsigned int loggedConfigured = 0;
     unsigned int loggedEffective = 0;
     unsigned int lastSuper = 0;
-    bool tuningReported = false;
     unsigned long long lastSplitLog = 0;
     unsigned lastFinishedMode = 0;
     bool reportedPadding = false;
@@ -4734,8 +3970,7 @@ struct DlssNr_Dx12::State
     float loggedExposure = -1.0f;
     float loggedScan = -1.0f;
 
-    bool usingProxy = false, proxyRunning = false;
-    DlssNr::Proxy::Context proxy;
+    bool modelRunning = false;
     ID3D12Resource* buffer = nullptr;
     D3D12_RESOURCE_STATES bufferState = D3D12_RESOURCE_STATE_COMMON;
     uint32_t featureFlags = 0;
@@ -4746,7 +3981,10 @@ struct DlssNr_Dx12::State
         const auto requested = DlssNr::ReadControlRequests();
         if (requested.retryGeneration != controls.retryGeneration)
         {
-            proxy.RetryAfterFailure();
+            for (auto& model : nr.models)
+                model.RetryAfterFailure();
+            std::fill(std::begin(nr.passCreateFailed), std::end(nr.passCreateFailed), false);
+            modelRunning = false;
             RetryAfterFailure();
         }
         if (requested.captureGeneration != controls.captureGeneration)
@@ -4757,7 +3995,7 @@ struct DlssNr_Dx12::State
     {
         DlssNr::PublishStatus(
             &shader, DlssNr::Backend::Dx12,
-            { !nr.failed && (usingProxy ? proxyRunning : nr.feature != nullptr),
+            { !nr.failed && modelRunning,
               nr.failed ? nr.reason : "",
               lastGpuTime,
               frames,
@@ -4768,13 +4006,7 @@ struct DlssNr_Dx12::State
     {
         WaitForFinishedPicture();
         ReleaseResources();
-        proxy.Release();
         SAFE_RELEASE(buffer);
-        if (nr.capabilityParams && NVNGXProxy::D3D12_DestroyParameters())
-            NVNGXProxy::D3D12_DestroyParameters()(nr.capabilityParams);
-        nr.capabilityParams = nullptr;
-        if (nr.forwarder)
-            FreeLibrary(nr.forwarder);
     }
 };
 
@@ -5118,11 +4350,6 @@ DlssNr::CalibrationReading DlssNr_Dx12::CalibrationStatus()
     std::lock_guard lock(_state->mutex);
     return _state->Calibration();
 }
-void DlssNr_Dx12::ProbeDx11(void* device)
-{
-    std::lock_guard lock(_state->mutex);
-    _state->ProbeD3D11(device);
-}
 
 namespace DlssNr
 {
@@ -5173,11 +4400,6 @@ CalibrationReading Calibration()
     std::lock_guard lock(nrOwnersMutex);
     return activeNrOwner ? activeNrOwner->CalibrationStatus() : CalibrationReading {};
 }
-void ProbeD3D11(void* device)
-{
-    std::lock_guard lock(nrOwnersMutex);
-    if (activeNrOwner)
-        activeNrOwner->ProbeDx11(device);
-}
+
 void Shutdown() { WaitForFinishedPicture(); }
 } // namespace DlssNr

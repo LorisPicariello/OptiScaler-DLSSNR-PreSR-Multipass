@@ -332,7 +332,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrTransfer.set_from_config(readUInt("DlssNr", "Transfer"));
 
             DlssNrWhitePointFromExposure.set_from_config(readBool("DlssNr", "WhitePointFromExposure"));
-            DlssNrProbeD3D11.set_from_config(readBool("DlssNr", "ProbeD3D11"));
             DlssNrDebugView.set_from_config(readUInt("DlssNr", "DebugView"));
             DlssNrCompare.set_from_config(readUInt("DlssNr", "Compare"));
             DlssNrCompareSplit.set_from_config(readFloat("DlssNr", "CompareSplit"));
@@ -346,8 +345,6 @@ bool Config::Reload(std::filesystem::path iniPath)
                 DlssNrScalingDownscaler.set_from_config(*v);
             else
                 DlssNrScalingDownscaler.reset();
-            DlssNrProxyProbe.set_from_config(readBool("DlssNr", "ProxyProbe"));
-            DlssNrUseProxy.set_from_config(readBool("DlssNr", "UseProxy"));
             DlssNrScanExposure.set_from_config(readBool("DlssNr", "ScanExposure"));
             DlssNrWhitePointSource.set_from_config(readUInt("DlssNr", "WhitePointSource"));
 
@@ -1254,6 +1251,9 @@ bool Config::SaveIni()
                  GetFloatValue(Instance()->DlssNrResidualAcrossRrBlend.value_for_config()).c_str());
     ini.Delete("DlssNr", "ResidualFG");
     ini.Delete("DlssNr", "ResidualFGApproxCamera");
+    ini.Delete("DlssNr", "UseProxy");
+    ini.Delete("DlssNr", "ProxyProbe");
+    ini.Delete("DlssNr", "ProbeD3D11");
     ini.Delete("DlssNr", "Precision"); // Remove the obsolete backend selector from saved configurations.
     {
         auto toggle = Instance()->DlssNrToggleKey.value_for_config();
@@ -1266,8 +1266,6 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "MaxRatio", GetFloatValue(Instance()->DlssNrMaxRatio.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Transfer", GetIntValue(Instance()->DlssNrTransfer.value_for_config()).c_str());
 
-    ini.SetValue("DlssNr", "ProbeD3D11",
-                 GetBoolValue(Instance()->DlssNrProbeD3D11.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointFromExposure",
                  GetBoolValue(Instance()->DlssNrWhitePointFromExposure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "DebugView", GetIntValue(Instance()->DlssNrDebugView.value_for_config()).c_str());
@@ -1298,8 +1296,6 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "ScanInverted", GetBoolValue(Instance()->DlssNrScanInverted.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ScanMeter", GetBoolValue(Instance()->DlssNrScanMeter.value_for_config()).c_str());
     ini.SetValue("DlssNr", "Passes", GetIntValue(Instance()->DlssNrPasses.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "UseProxy", GetBoolValue(Instance()->DlssNrUseProxy.value_for_config()).c_str());
-    ini.SetValue("DlssNr", "ProxyProbe", GetBoolValue(Instance()->DlssNrProxyProbe.value_for_config()).c_str());
     // ScanExposure is a developer override with no menu control; persist it so a set ini keeps it.
     ini.SetValue("DlssNr", "ScanExposure", GetBoolValue(Instance()->DlssNrScanExposure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "WhitePointScale",

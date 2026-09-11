@@ -2,7 +2,6 @@
 #include "IFeature_Dx11wDx12.h"
 #include "NgxOptionalDx12Inputs.h"
 
-#include <dlssnr/DlssNr.h>
 
 #include <Config.h>
 
@@ -449,16 +448,6 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             LOG_INFO("DLSS-NR: the D3D11 bridge reached the hand-off (upscale ok: {}, enabled: {})",
                      dx12EvalResult, Config::Instance()->DlssNrEnabled.value_or_default());
 
-        }
-
-        if (dx12EvalResult && Config::Instance()->DlssNrEnabled.value_or_default())
-        {
-
-            // Asked only after the D3D12 path has had its turn. Probing first would have made a D3D11
-            // init the very first thing to ever touch the snippet, and if that had left its core
-            // holding a D3D11 device the D3D12 create would have failed -- killing the feature in
-            // exactly the games the probe was written to help. Off by default regardless.
-            DlssNr::ProbeD3D11(Dx11Device);
         }
 
     } while (false);

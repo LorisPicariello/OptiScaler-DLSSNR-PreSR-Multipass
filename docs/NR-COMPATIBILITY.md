@@ -8,8 +8,8 @@ follows `LocalStructure`, so the default does not request separate skin detail s
 try `AutoMask=true`, `LocalStructure=1`, `SkinStructure=0` on a still character close-up.
 `SkinStructure=0` is not a switch that removes all skin lighting/colour changes.
 
-The forwarder now explicitly clears `DLSSNR.ControlMask` before setting AutoMask. An explicit mask
-overrides the automatic mask; a stale entry in the reusable parameter block must not win silently.
+An explicit `DLSSNR.ControlMask` overrides the automatic mask; a stale entry in a reusable
+parameter block must not win silently. The earlier direct backend explicitly cleared it.
 This is defensive handling, not confirmation that stale masks caused a particular user's report.
 The ControlMask precedence is also described in [these independent feature-18 probes](https://github.com/kibblerz/DLSS5-Reshade-AIO/blob/main/lab/PRIVATE-CONTRACT-FINDINGS.md#controlmask).
 Logs distinguish parameter-table readback from proof of a visible effect and identify the final
@@ -45,8 +45,8 @@ NR's graphics-state envelope previously started after model creation and some ea
 covers creation, recreation and evaluation. When the required game state cannot be restored, the
 frame is skipped before any NR command recording. These changes target concrete code gaps, but the
 retail game/RTX 30 combination has not been reproduced here, so this is a candidate fix.
-The DX12 forwarder also rejects a handle if model creation returned an error, matching its DX11/Vulkan
-paths, rather than treating a partially created feature as usable.
+The model context must reject creation errors rather than treating a partially returned handle as usable.
+The removed helper is no longer part of this error-handling path.
 
 Testing order for an affected machine:
 
@@ -61,8 +61,9 @@ an out-of-memory, resource-lifetime or other loading bug is fixed just because t
 
 ## Validation
 
-The Release x64 OptiScaler DLL and forwarder build successfully. Both DX12 DXIL and Vulkan SPIR-V
-shaders compile. `tests/nr_skin_shader_smoke.cpp` executes the shared HLSL headlessly using D3D11 WARP:
+The earlier compatibility build and both DX12 DXIL and Vulkan SPIR-V shader compilation passed.
+That result predates the mandatory driver-dispatch transition and does not validate its full runtime path.
+`tests/nr_skin_shader_smoke.cpp` executes the shared HLSL headlessly using D3D11 WARP:
 disabled/default identity, full bypass, skin/environment separation, mask preview and colour preservation.
 This is shader validation, not an in-game test of NVIDIA's automatic mask.
 

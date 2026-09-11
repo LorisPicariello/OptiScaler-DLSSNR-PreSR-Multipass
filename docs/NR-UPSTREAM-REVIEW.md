@@ -2,12 +2,13 @@
 
 Baseline: official OptiScaler `d36a078fb79a7a36e5dd356e4e173fdd9c7e29ec`.
 Cleanup branch: `codex/nr-upstream-cleanup`, created from `c543ccb8`.
-The original integration branch remains available. This is a source cleanup, not a rebase or release deployment.
+The original integration branch remains available. The last helper-based cleanup is preserved at
+`codex/nr-with-forwarder-validated` (`a8229256`).
 
 ## Neural Rendering changes
 
 - Per-upscaler DX12/Vulkan shader and model ownership, shared setup/dispatch pipelines, and DLSS DX12 bridges for DX11/Vulkan.
-- Standard NVIDIA NR runtime/forwarder and optional driver proxy; pre/post-SR placement, multipass, guide/subrect handling, scaling and color composition.
+- Mandatory installed-driver NGX dispatch with the separately supplied NVIDIA NR runtime; pre/post-SR placement, multipass, guide/subrect handling, scaling and color composition. No separate NR helper or alternative helper backend.
 - Every-frame deferred residual SR, residual-across-RR, finished-picture processing, ordinary NR frame hold, exposure/calibration, capture and comparison controls.
 - NR resource/queue hooks, lifetime/status handling, Vulkan extension negotiation and focused regressions.
 
@@ -28,15 +29,30 @@ Official FG backends and hardware capability checks remain. Startup, LibraryLoad
 
 ## Validation
 
+The following checks were rerun after removing the helper.
+
 - Release x64 solution build: passed, 64 warnings and zero errors. Warnings include existing conversion/inheritance, alignment and default-library diagnostics.
 - Production proxy/status/pipeline regressions: passed.
 - Legacy-settings check using production deletion statements and the repository's SimpleIni: passed; removed keys cleared while normal FG, NR placement/deferred/hold/pass settings and unrelated user settings survived. Source scan confirms no legacy option reads or runtime members remain.
 - Guide metadata, seam scheduling, NGX handle/optional-input routing, active-color rectangles, GPU timing and DXGI window/composition smoke tests: passed.
 - WARP skin/deferred residual and HDR finished-picture tests, plus production Vulkan shader execution on RTX 5090: passed. Generated header bytes match the compiled shaders; surviving operation IDs remain stable.
-- NR package smoke: passed; 39 checksummed files verified, with no NVIDIA model, DLSSG, Streamline or removed unlocker payloads. Packaging uses direct dependency sources and explicit file inclusion.
+- NR package smoke: passed; 38 checksummed files verified, with no NR helper, NVIDIA model, DLSSG, Streamline or removed unlocker payloads. Packaging uses direct dependency sources and explicit file inclusion.
 - Project compile registrations and absence of removed runtime/UI references: passed. Obsolete option names remain only for INI migration and explanatory documentation.
 
-In-game behavior, NVIDIA model output and ordinary FG interoperability were not exercised by this cleanup. Existing fixed-delay NR retirement, finished-picture timeout handling and single-device helper limitations remain documented; this cleanup does not claim to resolve them. No game files were changed.
+- Real NVIDIA driver, RTX 5090: DX12 and native Vulkan each created two independent identical-profile NR contexts and completed six GPU-fenced evaluations. Vulkan creation-event completion also passed.
+- Production DX12 model context compiled against real driver exports: independent contexts, same-epoch evaluation suppression, later-epoch evaluation and tuning-triggered recreation passed. Inputs were synthetic; these tests do not assess model image quality.
+
+The preceding helper-based build passed BG3 DX11 and Hogwarts saved-game smoke tests and Cyberpunk's
+benchmark, including NR off/on checks and ordinary FG. A subsequent Cyberpunk probe created and
+repeatedly evaluated NR through the driver with the helper physically absent. Screen capture then
+failed across apps, preventing gameplay/visual retesting of the final helper-free build. This build
+was installed into those three games with backups; DLL hashes and unchanged INIs were verified,
+and the helper is absent from their binary trees. KCD2 was not changed.
+
+Full gameplay stability, native Vulkan game integration, additional deferred/finished-picture modes,
+HDR image fidelity and other GPU/driver/runtime combinations remain unverified on this build.
+Existing fixed-delay NR retirement and finished-picture timeout handling remain documented; driver
+dispatch does not by itself establish multi-device safety.
 
 ## Complete baseline difference inventory
 
@@ -70,9 +86,9 @@ The table below accounts for every changed/added path relative to the pinned off
 | INSTALL-DLSSNR.md | NR instructions, design/history, compatibility evidence or upstream audit |
 | Licenses/RenoDX_ATTRIBUTION.txt | NR composition attribution |
 | OptiScaler.ini | Baseline defaults plus NR options and DX11 bridge help |
-| OptiScaler.sln | NR build/install/package integration and artifact hygiene |
 | OptiScaler/Config.cpp | NR settings and targeted obsolete-key migration; baseline FG settings retained |
 | OptiScaler/Config.h | NR settings and targeted obsolete-key migration; baseline FG settings retained |
+| OptiScaler/proxies/NVNGX_Proxy.h | Return actual Vulkan initialization status so NR and other callers can detect driver initialization failure |
 | OptiScaler/dlssnr/design/DEVELOPMENT.md | NR model, composition, scheduling, controls or generated shader artifact |
 | OptiScaler/dlssnr/design/frame-hold.md | NR model, composition, scheduling, controls or generated shader artifact |
 | OptiScaler/dlssnr/design/multi-point-anchoring.md | NR model, composition, scheduling, controls or generated shader artifact |
@@ -92,10 +108,6 @@ The table below accounts for every changed/added path relative to the pinned off
 | OptiScaler/dlssnr/DlssNrFeature_Vk.h | NR model, composition, scheduling, controls or generated shader artifact |
 | OptiScaler/dlssnr/DlssNrPipeline_Vk.h | NR model, composition, scheduling, controls or generated shader artifact |
 | OptiScaler/dlssnr/FORWARDER_INVESTIGATION.md | NR model, composition, scheduling, controls or generated shader artifact |
-| OptiScaler/dlssnr/forwarder/CMakeLists.txt | NR model, composition, scheduling, controls or generated shader artifact |
-| OptiScaler/dlssnr/forwarder/dlssnr_forwarder.cpp | NR model, composition, scheduling, controls or generated shader artifact |
-| OptiScaler/dlssnr/forwarder/dlssnr_forwarder.vcxproj | NR model, composition, scheduling, controls or generated shader artifact |
-| OptiScaler/dlssnr/forwarder/README.md | NR model, composition, scheduling, controls or generated shader artifact |
 | OptiScaler/dlssnr/PassProfiles.h | NR model, composition, scheduling, controls or generated shader artifact |
 | OptiScaler/dlssnr/README.md | NR model, composition, scheduling, controls or generated shader artifact |
 | OptiScaler/framegen/dlssg/DLSSG_Dx12.cpp | Guarded active-plugin binding, real FG limits, Vulkan menu interlock and KCD2 compatibility |
@@ -105,10 +117,9 @@ The table below accounts for every changed/added path relative to the pinned off
 | OptiScaler/hooks/DxgiFactory_Hooks.h | Window/composition swapchain compatibility; NR Present, resize and HDR hooks |
 | OptiScaler/hooks/DxgiSwapchainSizing.h | Window/composition swapchain compatibility; NR Present, resize and HDR hooks |
 | OptiScaler/hooks/FG_Hooks.cpp | Finished-picture NR integration with existing FG presentation |
-| OptiScaler/hooks/Kernel_Hooks.cpp | NR Vulkan extensions/HDR metadata and forwarder filename loading compatibility |
 | OptiScaler/hooks/Streamline_Hooks.cpp | Guarded active-plugin binding, real FG limits, Vulkan menu interlock and KCD2 compatibility |
 | OptiScaler/hooks/Streamline_Hooks.h | Guarded active-plugin binding, real FG limits, Vulkan menu interlock and KCD2 compatibility |
-| OptiScaler/hooks/Vulkan_Hooks.cpp | NR Vulkan extensions/HDR metadata and forwarder filename loading compatibility |
+| OptiScaler/hooks/Vulkan_Hooks.cpp | NR Vulkan extensions/HDR metadata |
 | OptiScaler/inputs/NgxFeatureRegistry.h | NGX feature identity, bridge parameters and owned NR lifecycle |
 | OptiScaler/inputs/NVNGX_DLSS_Dx11.cpp | NGX feature identity, bridge parameters and owned NR lifecycle |
 | OptiScaler/inputs/NVNGX_DLSS_Dx12.cpp | NGX feature identity, bridge parameters and owned NR lifecycle |

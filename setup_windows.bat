@@ -411,7 +411,8 @@ if "%setupSuccess%"=="true" (
     echo.
     echo Neural Rendering is off by default. See INSTALL-DLSSNR.md for the model runtime
     echo and enable it in the OptiScaler overlay when the ordinary upscaler works.
-    echo The package supplies nvngx.dll_dlssnr.dll; you supply nvngx_dlssnr.dll.
+    echo NR uses OptiScaler, your nvngx_dlssnr.dll, and the installed NVIDIA driver.
+    echo No separate NR helper DLL is required or supplied.
 )
 
 :end

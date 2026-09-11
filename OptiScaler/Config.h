@@ -365,14 +365,6 @@ class Config
     // Off by default until it has been seen to work in more than one game.
     CustomOptional<bool> DlssNrWhitePointFromExposure { true };
 
-    // Ask the model, once, whether it will run on Direct3D 11 without the bridge.
-    //
-    // Off by default and deliberately so. Everything else this pass does reads memory it already owns;
-    // this one initialises an NVIDIA subsystem on the game's live D3D11 device, in a process where the
-    // D3D12 NGX instance is already running. It should return an error code and nothing more, but
-    // "should" is doing work in that sentence and it ships into games nobody can test first.
-    CustomOptional<bool> DlssNrProbeD3D11 { false };
-
     // 0 off, 1 the picture the model was shown, 2 its raw answer, 3 what it changed, amplified.
     CustomOptional<uint32_t> DlssNrDebugView { 0 };
 
@@ -407,28 +399,6 @@ class Config
     // the downscaler that averages its answer back to native. Independent of OutputScalingDownscaler
     // so NR and Output Scaling can run different filters at once. Lanczos3 is the sharp default.
     CustomOptional<Scaler> DlssNrScalingDownscaler { Scaler::Lanczos3 };
-
-    // Ask the driver's own nvngx.dll whether it will dispatch Neural Rendering, once per session.
-    //
-    // Everything here drives the model's DLL directly through a forwarder, because the model refuses
-    // callers whose module path does not contain "nvngx.dll". But the model ships inside the driver
-    // store, and NVIDIA does not ship a feature DLL that no dispatcher can reach -- so the driver's
-    // nvngx.dll may well know feature 18 already. If it does, the forwarder is unnecessary, the
-    // signature question disappears, and users stop needing a 165 MB copy in every game folder.
-    //
-    // Off by default: it is a diagnostic, not a feature.
-    CustomOptional<bool> DlssNrProxyProbe { false };
-
-    // Run Neural Rendering through the driver's own nvngx.dll rather than through the forwarder.
-    //
-    // This is how DLSS itself is called. The forwarder exists only because driving the model
-    // directly trips its caller check, and a probe showed the driver dispatches feature 18 already:
-    // asking for 18 answers differently from asking for a feature that does not exist. OptiScaler
-    // also already tells the driver where to look, since NVNGX_FeatureInfo_Paths carries the game
-    // and OptiScaler folders into Init_Ext.
-    //
-    // Off until it is shown to produce the same picture. If it does, the forwarder can go.
-    CustomOptional<bool> DlssNrUseProxy { false };
 
     // Look for the exposure the game computed but never handed to the upscaler.
     //

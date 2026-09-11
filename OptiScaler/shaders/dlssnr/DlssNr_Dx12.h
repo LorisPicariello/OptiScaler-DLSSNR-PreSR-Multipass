@@ -100,7 +100,6 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     std::string FinishedStatus();
     std::string DeferredStatus();
     DlssNr::CalibrationReading CalibrationStatus();
-    void ProbeDx11(void* device);
 
     // Records one pass. Resources that a given mode does not read may be null; a stand-in is bound in
     // their place so every descriptor in the table is valid.

@@ -8,8 +8,7 @@
 
 #include <Config.h>
 #include <State.h>
-#include <Util.h>
-#include <NVNGX_Parameter.h>
+#include <proxies/NVNGX_Proxy.h>
 
 #include <shaders/dlssnr/DlssNr_Vk.h>
 #include <shaders/dlssnr/DlssNr_Guides.h>
@@ -25,17 +24,13 @@
 namespace DlssNr
 {
 
-// The forwarder's Vulkan surface. The model checks its caller's module path and requires nvngx.dll in
-// it, whichever API is being used, so these calls go through the same shim the D3D12 path does.
-using PFN_VkProbe = int(__cdecl*)(const wchar_t*);
-using PFN_VkInit = int(__cdecl*)(const wchar_t*, const wchar_t*, void*, void*, void*, int);
-using PFN_VkCreate = void*(__cdecl*) (void*, void*, unsigned int, unsigned int, int, float, int, float, float, float,
-                                      int, int);
-using PFN_VkEvaluate = int(__cdecl*)(void*, void*, void*, void*, void*, void*, void*, unsigned int, unsigned int,
-                                     unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
-                                     unsigned int, unsigned int, int, int, float, int, float, float, float, int, float,
-                                     float);
-using PFN_VkRelease = void(__cdecl*)(void*);
+// Each layer has its own driver-created feature and capability parameter map.
+// Sharing either would couple temporal histories when two passes use the same profile.
+struct NgxPassVk
+{
+    NVSDK_NGX_Handle* feature = nullptr;
+    NVSDK_NGX_Parameter* parameters = nullptr;
+};
 
 // One image this pass owns: the storage, the view, and the NGX wrapper that describes it. Kept
 // together because they are created, resized and destroyed as one thing.
@@ -58,27 +53,18 @@ struct VkState
     bool failed = false;
     const char* reason = "";
 
-    HMODULE forwarder = nullptr;
-    PFN_VkProbe probe = nullptr;
-    PFN_VkInit init = nullptr;
-    PFN_VkCreate create = nullptr;
-    PFN_VkEvaluate evaluate = nullptr;
-    PFN_VkRelease release = nullptr;
-
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
 
     bool ngxInitialised = false;
-    void* feature = nullptr;
-    void* laterFeatures[DlssNr::MaxPassCount] {};
+    NgxPassVk models[DlssNr::MaxPassCount] {};
     Profiles::NrPassTuning builtTuning[DlssNr::MaxPassCount] {};
     unsigned int builtPreset[DlssNr::MaxPassCount] {};
     unsigned int builtStyle[DlssNr::MaxPassCount] {};
     unsigned int activePasses = 0;
     VkEvent creationReady = VK_NULL_HANDLE;
     bool creationPending = false;
-    NVSDK_NGX_Parameter* capabilityParams = nullptr;
 
     // What the model writes, the proxy it is shown, and the frame as the upscaler left it.
     OwnedImage output;
@@ -442,43 +428,144 @@ struct ModelVk::Impl
     // Bring-up
     // ---------------------------------------------------------------------------------------------
 
-    bool LoadForwarder()
+    bool InitDriver(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device)
     {
-        if (state.forwarder != nullptr)
-            return state.init != nullptr && state.create != nullptr && state.evaluate != nullptr;
-
-        auto path = Util::FindFilePath(Util::DllPath().remove_filename(), "nvngx.dll_dlssnr.dll");
-
-        if (!path.has_value())
-            path = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx.dll_dlssnr.dll");
-
-        if (!path.has_value())
+        if (!NVNGXProxy::IsVulkanInited() &&
+            !NVNGXProxy::InitVulkan(instance, physicalDevice, device, vkGetInstanceProcAddr, vkGetDeviceProcAddr))
         {
-            Fail("nvngx.dll_dlssnr.dll was not found beside OptiScaler or the game");
+            Fail("the NVIDIA NGX Vulkan driver could not initialize");
             return false;
         }
-
-        state.forwarder = LoadLibraryW(path->wstring().c_str());
-
-        if (state.forwarder == nullptr)
+        if (!NVNGXProxy::IsVulkanInited() || !NVNGXProxy::VULKAN_GetCapabilityParameters() ||
+            !NVNGXProxy::VULKAN_CreateFeature1() || !NVNGXProxy::VULKAN_EvaluateFeature() ||
+            !NVNGXProxy::VULKAN_ReleaseFeature() || !NVNGXProxy::VULKAN_DestroyParameters())
         {
-            Fail("the forwarder would not load");
+            Fail("the NVIDIA NGX Vulkan driver interface is incomplete");
             return false;
         }
-
-        state.probe = (PFN_VkProbe) GetProcAddress(state.forwarder, "dlssnr_vk_probe");
-        state.init = (PFN_VkInit) GetProcAddress(state.forwarder, "dlssnr_vk_init");
-        state.create = (PFN_VkCreate) GetProcAddress(state.forwarder, "dlssnr_vk_create");
-        state.evaluate = (PFN_VkEvaluate) GetProcAddress(state.forwarder, "dlssnr_vk_evaluate_v2");
-        state.release = (PFN_VkRelease) GetProcAddress(state.forwarder, "dlssnr_vk_release");
-
-        if (state.init == nullptr || state.create == nullptr || state.evaluate == nullptr)
-        {
-            Fail("Update nvngx.dll_dlssnr.dll from the complete release (NR v2 exports required)");
-            return false;
-        }
-
+        if (!state.ngxInitialised)
+            LOG_INFO("DLSS-NR Vulkan: using the NVIDIA NGX driver dispatcher");
+        state.ngxInitialised = true;
         return true;
+    }
+
+    void ReleaseModels()
+    {
+        // GPU work is retired by callers before feature/map teardown.
+        for (auto& model : state.models)
+        {
+            if (model.feature && NVNGXProxy::VULKAN_ReleaseFeature())
+                NVNGXProxy::VULKAN_ReleaseFeature()(model.feature);
+            if (model.parameters && NVNGXProxy::VULKAN_DestroyParameters())
+                NVNGXProxy::VULKAN_DestroyParameters()(model.parameters);
+            model = {};
+        }
+    }
+
+    static void SetTuning(NVSDK_NGX_Parameter* parameters, const Profiles::NrPassTuning& tuning,
+                          unsigned int style)
+    {
+        parameters->Set("DLSSNR.Intensity", tuning.intensity);
+        parameters->Set("DLSSNR.Style", style);
+        parameters->Set("DLSSNR.LocalStructureStrength", tuning.structure);
+        parameters->Set("DLSSNR.LocalToneStrength", tuning.tone);
+        parameters->Set("DLSSNR.SkinStructureStrength", tuning.skin);
+        parameters->Set("DLSSNR.ControlMask", static_cast<void*>(nullptr));
+        parameters->Set("DLSSNR.UseAutoMask", tuning.autoMask ? 1u : 0u);
+    }
+
+    bool CreateModel(VkCommandBuffer commandBuffer, unsigned int passIndex, unsigned int width,
+                     unsigned int height, const Config& config)
+    {
+        auto& model = state.models[passIndex];
+        if (model.feature)
+            return true;
+        if (!model.parameters)
+        {
+            const auto result = NVNGXProxy::VULKAN_GetCapabilityParameters()(&model.parameters);
+            if (result != NVSDK_NGX_Result_Success || !model.parameters)
+            {
+                LOG_ERROR("DLSS-NR Vulkan: capability parameters for pass {} failed 0x{:X}", passIndex + 1,
+                          static_cast<unsigned int>(result));
+                Fail("the NVIDIA NGX driver could not allocate capability parameters");
+                return false;
+            }
+        }
+        auto* parameters = model.parameters;
+        parameters->Set("DLSSNR.Enabled", 1u);
+        parameters->Set("DLSSNR.Width", width);
+        parameters->Set("DLSSNR.Height", height);
+        parameters->Set("CreationNodeMask", 1u);
+        parameters->Set("VisibilityNodeMask", 1u);
+        parameters->Set("DLSSNR.Hint.Render.Preset", Profiles::PassPreset(config, passIndex));
+        parameters->Set("DLSSNR.UICorrection", 1u);
+        SetTuning(parameters, Profiles::PassTuning(config, passIndex), Profiles::PassStyle(config, passIndex));
+        const auto result = NVNGXProxy::VULKAN_CreateFeature1()(
+            state.device, commandBuffer, static_cast<NVSDK_NGX_Feature>(18), parameters, &model.feature);
+        // Identical-profile layers still require distinct temporal histories. Reject aliasing rather
+        // than silently sharing a driver handle, including an AlreadyExists response with a handle.
+        if (model.feature)
+        {
+            for (unsigned int other = 0; other < DlssNr::MaxPassCount; ++other)
+            {
+                const auto* existing = state.models[other].feature;
+                if (other != passIndex && existing &&
+                    (existing == model.feature || existing->Id == model.feature->Id))
+                {
+                    model.feature = nullptr; // owned by the other layer; do not double-release
+                    Fail("the NVIDIA NGX driver reused a feature instead of creating an independent NR pass");
+                    return false;
+                }
+            }
+        }
+        if (result != NVSDK_NGX_Result_Success || !model.feature)
+        {
+            LOG_ERROR("DLSS-NR Vulkan: driver CreateFeature(18), pass {}, failed 0x{:X}", passIndex + 1,
+                      static_cast<unsigned int>(result));
+            Fail("the NVIDIA NGX driver could not create an independent Neural Rendering feature");
+            return false;
+        }
+        return true;
+    }
+
+    NVSDK_NGX_Result EvaluateModel(VkCommandBuffer commandBuffer, unsigned int passIndex,
+                                  NVSDK_NGX_Resource_VK* colour, NVSDK_NGX_Resource_VK* depth,
+                                  NVSDK_NGX_Resource_VK* motion, NVSDK_NGX_Resource_VK* output,
+                                  unsigned int width, unsigned int height, const GuideRegions& guides,
+                                  bool depthInverted, float mvX, float mvY, const Config& config)
+    {
+        auto& model = state.models[passIndex];
+        auto* parameters = model.parameters;
+        // The Vulkan SDK stores pointers to NVSDK_NGX_Resource_VK through the void-pointer overload.
+        parameters->Set("DLSSNR.Color", static_cast<void*>(colour));
+        parameters->Set("DLSSNR.Depth", static_cast<void*>(depth));
+        parameters->Set("DLSSNR.MVec", static_cast<void*>(motion));
+        parameters->Set("DLSSNR.Output", static_cast<void*>(output));
+        parameters->Set("DLSSNR.Enabled", 1u);
+        parameters->Set("DLSSNR.Width", width);
+        parameters->Set("DLSSNR.Height", height);
+        parameters->Set("DLSSNR.DepthInverted", depthInverted ? 1u : 0u);
+        parameters->Set("DLSSNR.Reset", state.reset ? 1u : 0u);
+        parameters->Set("DLSSNR.ColorSubrectBaseX", 0u);
+        parameters->Set("DLSSNR.ColorSubrectBaseY", 0u);
+        parameters->Set("DLSSNR.ColorSubrectWidth", width);
+        parameters->Set("DLSSNR.ColorSubrectHeight", height);
+        parameters->Set("DLSSNR.OutputSubrectBaseX", 0u);
+        parameters->Set("DLSSNR.OutputSubrectBaseY", 0u);
+        parameters->Set("DLSSNR.OutputSubrectWidth", width);
+        parameters->Set("DLSSNR.OutputSubrectHeight", height);
+        parameters->Set("DLSSNR.DepthSubrectBaseX", guides.depth.x);
+        parameters->Set("DLSSNR.DepthSubrectBaseY", guides.depth.y);
+        parameters->Set("DLSSNR.DepthSubrectWidth", guides.depth.width);
+        parameters->Set("DLSSNR.DepthSubrectHeight", guides.depth.height);
+        parameters->Set("DLSSNR.MVecSubrectBaseX", guides.motion.x);
+        parameters->Set("DLSSNR.MVecSubrectBaseY", guides.motion.y);
+        parameters->Set("DLSSNR.MVecSubrectWidth", guides.motion.width);
+        parameters->Set("DLSSNR.MVecSubrectHeight", guides.motion.height);
+        parameters->Set("DLSSNR.MVecScaleX", mvX);
+        parameters->Set("DLSSNR.MVecScaleY", mvY);
+        SetTuning(parameters, Profiles::PassTuning(config, passIndex), Profiles::PassStyle(config, passIndex));
+        return NVNGXProxy::VULKAN_EvaluateFeature()(commandBuffer, model.feature, parameters, nullptr);
     }
 
     // Whether a format can hold linear, open-ended light. A frame the game already tone mapped has white
@@ -498,16 +585,6 @@ struct ModelVk::Impl
         default:
             return false;
         }
-    }
-
-    std::optional<std::filesystem::path> FindSnippet()
-    {
-        auto snippet = Util::FindFilePath(Util::DllPath().remove_filename(), "nvngx_dlssnr.dll");
-
-        if (!snippet.has_value())
-            snippet = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
-
-        return snippet;
     }
 
     bool Evaluate(VkCommandBuffer cmdBuffer, const VkImageInfo& colourInfo, const VkImageInfo& depthInfo,
@@ -553,7 +630,7 @@ struct ModelVk::Impl
                 exposure.exposure = state.gameExposure;
                 exposure.preExposure = state.gamePreExposure;
                 PublishStatus(owner, Backend::Vulkan,
-                              { state.feature != nullptr && !state.failed, state.reason, state.lastGpuTime,
+                              { state.models[0].feature != nullptr && !state.failed, state.reason, state.lastGpuTime,
                                 state.frames, exposure, false });
             }
         } report { this };
@@ -714,11 +791,10 @@ struct ModelVk::Impl
         }
         state.device = device;
 
-        if (!LoadForwarder())
+        if (!InitDriver(instance, physicalDevice, device))
             return false;
 
-        // Initialise NGX on this device, once. The snippet path is the model itself; the forwarder loads
-        // it so the caller gate sees a module named nvngx.dll.
+        // A GPU event separates creation uploads from model evaluation.
         if (state.creationPending)
         {
             // A second NGX evaluate need not mean the previous command buffer was submitted.
@@ -726,52 +802,6 @@ struct ModelVk::Impl
             if (vkGetEventStatus(device, state.creationReady) != VK_EVENT_SET)
                 return false;
             state.creationPending = false;
-        }
-
-        if (!state.ngxInitialised)
-        {
-            auto snippet = FindSnippet();
-
-            if (!snippet.has_value())
-            {
-                Fail("nvngx_dlssnr.dll was not found beside OptiScaler or the game");
-                return false;
-            }
-
-            const int probe = state.probe != nullptr ? state.probe(snippet->wstring().c_str()) : 0;
-
-            // Four bits, one per entry point. Anything short of fifteen means the model's Vulkan surface
-            // is not entirely reachable and there is no point going further.
-            if (probe != 15)
-            {
-                LOG_ERROR("DLSS-NR Vulkan: the model's Vulkan surface is incomplete (probe {})", probe);
-                Fail("the model does not expose a complete Vulkan surface");
-                return false;
-            }
-
-            const int result =
-                state.init(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                           (void*) instance, (void*) physicalDevice, (void*) device, 0x0000015);
-
-            if (result != 1)
-            {
-                LOG_ERROR("DLSS-NR Vulkan: NVSDK_NGX_VULKAN_Init_Ext returned {}", result);
-                Fail("the model would not initialise on this Vulkan device");
-                return false;
-            }
-
-            state.ngxInitialised = true;
-            LOG_INFO("DLSS-NR Vulkan: the model initialised on this device");
-        }
-
-        if (state.capabilityParams == nullptr)
-        {
-            if (NVSDK_NGX_VULKAN_AllocateParameters(&state.capabilityParams) != NVSDK_NGX_Result_Success ||
-                state.capabilityParams == nullptr)
-            {
-                Fail("a parameter block could not be allocated");
-                return false;
-            }
         }
 
         if (state.queryPool == VK_NULL_HANDLE)
@@ -826,17 +856,7 @@ struct ModelVk::Impl
                 return false;
             }
 
-            if (state.feature != nullptr && state.release != nullptr)
-            {
-                state.release(state.feature);
-                state.feature = nullptr;
-            }
-            for (auto& feature : state.laterFeatures)
-            {
-                if (feature && state.release)
-                    state.release(feature);
-                feature = nullptr;
-            }
+            ReleaseModels();
             DestroyImage(state.scratch);
 
             const VkFormat working = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -888,19 +908,10 @@ struct ModelVk::Impl
         bool created = false;
         for (unsigned int pass = 0; pass < passes; ++pass)
         {
-            void*& feature = pass == 0 ? state.feature : state.laterFeatures[pass];
-            if (feature)
+            if (state.models[pass].feature)
                 continue;
-            const auto tuning = Profiles::PassTuning(cfg, pass);
-            feature = state.create((void*) cmdBuffer, state.capabilityParams, workWidth, workHeight,
-                                   (int) Profiles::PassPreset(cfg, pass), tuning.intensity,
-                                   (int) Profiles::PassStyle(cfg, pass), tuning.structure, tuning.tone, tuning.skin,
-                                   tuning.autoMask ? 1 : 0, 1);
-            if (!feature)
-            {
-                Fail("the model would not build a feature on this device");
+            if (!CreateModel(cmdBuffer, pass, workWidth, workHeight, cfg))
                 return false;
-            }
 
             LOG_INFO("DLSS-NR Vulkan: pass {} built at {}x{} (frame {}x{}, {} SR)", pass + 1, workWidth, workHeight,
                      width, height, beforeSr ? "before" : "after");
@@ -1154,20 +1165,14 @@ struct ModelVk::Impl
         mvY *= (float) workHeight / height;
         OwnedImage* answer = &state.output;
         OwnedImage* input = modelInput;
-        int evaluated = 1;
+        NVSDK_NGX_Result evaluated = NVSDK_NGX_Result_Success;
         for (unsigned int pass = 0; pass < passes; ++pass)
         {
             Transition(cmdBuffer, *input, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             Transition(cmdBuffer, *answer, VK_IMAGE_LAYOUT_GENERAL);
-            const auto tuning = Profiles::PassTuning(cfg, pass);
-            evaluated =
-                state.evaluate((void*) cmdBuffer, pass == 0 ? state.feature : state.laterFeatures[pass],
-                               state.capabilityParams, &input->ngx, depth, motion, &answer->ngx, workWidth, workHeight,
-                               guideWidth, guideHeight, guides.motion.width, guides.motion.height, guides.depth.x,
-                               guides.depth.y, guides.motion.x, guides.motion.y, depthInverted ? 1 : 0,
-                               state.reset ? 1 : 0, tuning.intensity, (int) Profiles::PassStyle(cfg, pass),
-                               tuning.structure, tuning.tone, tuning.skin, tuning.autoMask ? 1 : 0, mvX, mvY);
-            if (evaluated != 1)
+            evaluated = EvaluateModel(cmdBuffer, pass, &input->ngx, depth, motion, &answer->ngx,
+                                      workWidth, workHeight, guides, depthInverted, mvX, mvY, cfg);
+            if (evaluated != NVSDK_NGX_Result_Success)
                 break;
             if (pass + 1 < passes)
             {
@@ -1179,9 +1184,9 @@ struct ModelVk::Impl
         state.reset = false;
         state.frames++;
 
-        if (evaluated != 1)
+        if (evaluated != NVSDK_NGX_Result_Success)
         {
-            LOG_ERROR("DLSS-NR Vulkan: evaluate returned {}", evaluated);
+            LOG_ERROR("DLSS-NR Vulkan: evaluate returned 0x{:X}", static_cast<unsigned int>(evaluated));
             Fail("the model refused to evaluate");
             return false;
         }
@@ -1270,17 +1275,7 @@ struct ModelVk::Impl
         if (state.device != VK_NULL_HANDLE)
             vkDeviceWaitIdle(state.device);
 
-        if (state.feature != nullptr && state.release != nullptr)
-            state.release(state.feature);
-
-        state.feature = nullptr;
-
-        for (auto& feature : state.laterFeatures)
-        {
-            if (feature && state.release)
-                state.release(feature);
-            feature = nullptr;
-        }
+        ReleaseModels();
         state.activePasses = 0;
         if (state.creationReady != VK_NULL_HANDLE)
             vkDestroyEvent(state.device, state.creationReady, nullptr);
@@ -1300,12 +1295,6 @@ struct ModelVk::Impl
         state.superDown.reset();
         state.nrScaler = Scaler::Count;
 
-        if (state.capabilityParams != nullptr)
-        {
-            NVSDK_NGX_VULKAN_DestroyParameters(state.capabilityParams);
-            state.capabilityParams = nullptr;
-        }
-
         if (state.queryPool != VK_NULL_HANDLE && state.device != VK_NULL_HANDLE)
         {
             vkDestroyQueryPool(state.device, state.queryPool, nullptr);
@@ -1320,14 +1309,6 @@ struct ModelVk::Impl
         state.height = 0;
         state.ngxInitialised = false;
         state.reset = true;
-        if (state.forwarder)
-            FreeLibrary(state.forwarder);
-        state.forwarder = nullptr;
-        state.probe = nullptr;
-        state.init = nullptr;
-        state.create = nullptr;
-        state.evaluate = nullptr;
-        state.release = nullptr;
     }
 };
 

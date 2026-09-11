@@ -1,7 +1,6 @@
 #include "pch.h"
 #include "DlssNr_Proxy.h"
 
-#include <Config.h>
 #include <Logger.h>
 #include <proxies/NVNGX_Proxy.h>
 #include <vector>
@@ -16,34 +15,14 @@ void SetResource(NVSDK_NGX_Parameter* params, const char* name, ID3D12Resource* 
 
 void SetFloat(NVSDK_NGX_Parameter* params, const char* name, float value) { params->Set(name, value); }
 
-struct CreationSettings
-{
-    unsigned int width, height, preset, style;
-    float intensity, localStructure, localTone, skinStructure;
-    bool autoMask;
-
-    bool operator==(const CreationSettings&) const = default;
-};
-
-CreationSettings ReadSettings(const Config& cfg, unsigned int width, unsigned int height)
-{
-    return { width,
-             height,
-             (unsigned int) cfg.DlssNrPreset.value_or_default(),
-             (unsigned int) cfg.DlssNrStyle.value_or_default(),
-             cfg.DlssNrIntensity.value_or_default(),
-             cfg.DlssNrLocalStructure.value_or_default(),
-             cfg.DlssNrLocalTone.value_or_default(),
-             cfg.DlssNrSkinStructure.value_or_default(),
-             cfg.DlssNrAutoMask.value_or_default() };
-}
-
 struct ProxyState
 {
     NVSDK_NGX_Handle* feature = nullptr;
     NVSDK_NGX_Parameter* params = nullptr;
 
-    CreationSettings settings {};
+    DlssNr::Proxy::Settings settings {};
+    unsigned int width = 0, height = 0;
+    uint64_t creationEpoch = 0;
     ID3D12Device* device = nullptr;
     bool failed = false;
     bool reset = true;
@@ -71,7 +50,7 @@ void DestroyState(ProxyState& state)
 // These have to be set before create, not at evaluate. The model reads its tuning once, while
 // building the feature; values written only at evaluate are ignored, which is why several of these
 // controls appeared to do nothing for a long time.
-void SetCreationParameters(NVSDK_NGX_Parameter* params, const Config& cfg, unsigned int width,
+void SetCreationParameters(NVSDK_NGX_Parameter* params, const DlssNr::Proxy::Settings& settings, unsigned int width,
                            unsigned int height)
 {
     SetUInt(params, "DLSSNR.Enabled", 1u);
@@ -81,18 +60,28 @@ void SetCreationParameters(NVSDK_NGX_Parameter* params, const Config& cfg, unsig
     SetUInt(params, "VisibilityNodeMask", 1u);
 
     // Set the default preset explicitly, too.
-    SetUInt(params, "DLSSNR.Hint.Render.Preset", (unsigned int) cfg.DlssNrPreset.value_or_default());
+    SetUInt(params, "DLSSNR.Hint.Render.Preset", (unsigned int) settings.preset);
 
-    SetFloat(params, "DLSSNR.Intensity", cfg.DlssNrIntensity.value_or_default());
-    SetUInt(params, "DLSSNR.Style", (unsigned int) cfg.DlssNrStyle.value_or_default());
-    SetFloat(params, "DLSSNR.LocalStructureStrength", cfg.DlssNrLocalStructure.value_or_default());
-    SetFloat(params, "DLSSNR.LocalToneStrength", cfg.DlssNrLocalTone.value_or_default());
-    SetFloat(params, "DLSSNR.SkinStructureStrength", cfg.DlssNrSkinStructure.value_or_default());
-    SetUInt(params, "DLSSNR.UseAutoMask", cfg.DlssNrAutoMask.value_or_default() ? 1u : 0u);
+    SetFloat(params, "DLSSNR.Intensity", settings.intensity);
+    SetUInt(params, "DLSSNR.Style", (unsigned int) settings.style);
+    SetFloat(params, "DLSSNR.LocalStructureStrength", settings.localStructure);
+    SetFloat(params, "DLSSNR.LocalToneStrength", settings.localTone);
+    SetFloat(params, "DLSSNR.SkinStructureStrength", settings.skinStructure);
+    SetUInt(params, "DLSSNR.UseAutoMask", settings.autoMask ? 1u : 0u);
 
     // UI correction at the model's own default: with no UI layer fed to it there is nothing to
     // correct.
     SetUInt(params, "DLSSNR.UICorrection", 1u);
+    SetResource(params, "DLSSNR.ControlMask", nullptr);
+    SetResource(params, "DLSSNR.UI", nullptr);
+    SetResource(params, "DLSSNR.UIAlpha", nullptr);
+    SetResource(params, "DLSSNR.Backbuffer", nullptr);
+    for (const char* key :
+         { "DLSSNR.UISubrectBaseX", "DLSSNR.UISubrectBaseY", "DLSSNR.UISubrectWidth", "DLSSNR.UISubrectHeight",
+           "DLSSNR.UIAlphaSubrectBaseX", "DLSSNR.UIAlphaSubrectBaseY", "DLSSNR.UIAlphaSubrectWidth",
+           "DLSSNR.UIAlphaSubrectHeight", "DLSSNR.BackbufferSubrectBaseX", "DLSSNR.BackbufferSubrectBaseY",
+           "DLSSNR.BackbufferSubrectWidth", "DLSSNR.BackbufferSubrectHeight" })
+        SetUInt(params, key, 0u);
 }
 } // namespace
 
@@ -105,14 +94,18 @@ struct Context::Impl
     ProxyState state;
     std::vector<RetiredState> retiredStates;
     void RetireState();
-    void TickRetired();
+    void TickRetired(uint64_t epoch);
+    bool haveEpoch = false;
+    uint64_t lastEpoch = 0;
+    unsigned int Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, unsigned int width,
+                         unsigned int height, const Settings& settings, uint64_t submissionEpoch, bool* ready);
     void Release();
     unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color,
                      ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output, unsigned int width,
-                     unsigned int height, unsigned int guideWidth, unsigned int guideHeight,
-                     unsigned int motionWidth, unsigned int motionHeight, unsigned int depthBaseX,
-                     unsigned int depthBaseY, unsigned int motionBaseX, unsigned int motionBaseY,
-                     bool depthInverted, bool reset, float mvScaleX, float mvScaleY, bool* evaluated);
+                     unsigned int height, unsigned int guideWidth, unsigned int guideHeight, unsigned int motionWidth,
+                     unsigned int motionHeight, unsigned int depthBaseX, unsigned int depthBaseY,
+                     unsigned int motionBaseX, unsigned int motionBaseY, bool depthInverted, bool reset, float mvScaleX,
+                     float mvScaleY, const Settings& settings, uint64_t submissionEpoch, bool* evaluated);
 };
 
 void Context::Impl::RetireState()
@@ -123,8 +116,12 @@ void Context::Impl::RetireState()
     state = {};
 }
 
-void Context::Impl::TickRetired()
+void Context::Impl::TickRetired(uint64_t epoch)
 {
+    if (haveEpoch && lastEpoch == epoch)
+        return;
+    haveEpoch = true;
+    lastEpoch = epoch;
     // Match the existing DLSS-NR resource retirement window. Feature creation/evaluation
     // records GPU work, so replacing a feature must not destroy it on that same frame.
     for (size_t i = 0; i < retiredStates.size();)
@@ -159,36 +156,19 @@ void Context::Impl::Release()
 
 void Context::RetryAfterFailure() { _impl->RetireState(); }
 
-unsigned int Context::Impl::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color,
-                                ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output,
-                                unsigned int width, unsigned int height, unsigned int guideWidth,
-                                unsigned int guideHeight, unsigned int motionWidth, unsigned int motionHeight,
-                                unsigned int depthBaseX, unsigned int depthBaseY, unsigned int motionBaseX,
-                                unsigned int motionBaseY, bool depthInverted, bool reset, float mvScaleX,
-                                float mvScaleY, bool* evaluated)
+unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, unsigned int width,
+                                    unsigned int height, const Settings& settings, uint64_t submissionEpoch,
+                                    bool* ready)
 {
-    if (evaluated != nullptr)
-        *evaluated = false;
-
-    if (state.failed || cmdList == nullptr || device == nullptr || color == nullptr || depth == nullptr ||
-        motion == nullptr || output == nullptr || width == 0 || height == 0 || guideWidth == 0 || guideHeight == 0 ||
-        motionWidth == 0 || motionHeight == 0)
+    *ready = false;
+    TickRetired(submissionEpoch);
+    if (state.failed || !cmdList || !device || !width || !height)
         return 0;
-
-    if (!NVNGXProxy::IsDx12Inited() && !NVNGXProxy::InitDx12(device))
+    if ((!NVNGXProxy::IsDx12Inited() && !NVNGXProxy::InitDx12(device)) || !Context::Available())
         return 0;
-
-    if (!Context::Available())
-        return 0;
-
-    TickRetired();
-
-    const Config& cfg = *Config::Instance();
-    const auto settings = ReadSettings(cfg, width, height);
-
-    if (state.feature != nullptr && (state.settings != settings || state.device != device))
+    if (state.feature &&
+        (state.settings != settings || state.device != device || state.width != width || state.height != height))
         RetireState();
-
     if (state.params == nullptr)
     {
         // A dedicated parameter map populated with NGX capabilities. Unlike the deprecated
@@ -198,14 +178,14 @@ unsigned int Context::Impl::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device
         {
             DestroyState(state);
             state.failed = true;
-            LOG_ERROR("DLSS-NR (proxy): the NGX core refused its capability parameters");
+            LOG_ERROR("DLSS-NR (driver): the NGX core refused its capability parameters");
             return (unsigned int) (allocated == NVSDK_NGX_Result_Success ? NVSDK_NGX_Result_Fail : allocated);
         }
     }
 
     if (state.feature == nullptr)
     {
-        SetCreationParameters(state.params, cfg, width, height);
+        SetCreationParameters(state.params, settings, width, height);
 
         const auto created =
             NVNGXProxy::D3D12_CreateFeature()(cmdList, (NVSDK_NGX_Feature) 18, state.params, &state.feature);
@@ -214,21 +194,41 @@ unsigned int Context::Impl::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device
         {
             RetireState();
             state.failed = true;
-            LOG_ERROR("DLSS-NR (proxy): CreateFeature(18) failed 0x{:X} -- falling back is the "
-                      "caller's decision",
-                      (unsigned int) created);
+            LOG_ERROR("DLSS-NR (driver): CreateFeature(18) failed 0x{:X}", (unsigned int) created);
             return (unsigned int) (created == NVSDK_NGX_Result_Success ? NVSDK_NGX_Result_Fail : created);
         }
 
         state.settings = settings;
         state.device = device;
-        LOG_INFO("DLSS-NR (proxy): feature created at {}x{} through the driver's nvngx -- no "
-                 "forwarder in this path",
-                 width, height);
+        state.width = width;
+        state.height = height;
+        state.creationEpoch = submissionEpoch;
+        LOG_INFO("DLSS-NR (driver): feature created at {}x{} through the NVIDIA NGX driver", width, height);
 
-        // As on the direct backend, let creation work be submitted before evaluation.
+        // Creation must reach the GPU before any evaluation is recorded.
         return (unsigned int) NVSDK_NGX_Result_Success;
     }
+
+    *ready = submissionEpoch != state.creationEpoch;
+    return (unsigned int) NVSDK_NGX_Result_Success;
+}
+
+unsigned int Context::Impl::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color,
+                                ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output,
+                                unsigned int width, unsigned int height, unsigned int guideWidth,
+                                unsigned int guideHeight, unsigned int motionWidth, unsigned int motionHeight,
+                                unsigned int depthBaseX, unsigned int depthBaseY, unsigned int motionBaseX,
+                                unsigned int motionBaseY, bool depthInverted, bool reset, float mvScaleX,
+                                float mvScaleY, const Settings& settings, uint64_t submissionEpoch, bool* evaluated)
+{
+    if (evaluated)
+        *evaluated = false;
+    if (!color || !depth || !motion || !output || !guideWidth || !guideHeight || !motionWidth || !motionHeight)
+        return 0;
+    bool ready = false;
+    const auto prepared = Prepare(cmdList, device, width, height, settings, submissionEpoch, &ready);
+    if (prepared != NVSDK_NGX_Result_Success || !ready)
+        return prepared;
 
     NVSDK_NGX_Parameter* params = state.params;
 
@@ -268,12 +268,12 @@ unsigned int Context::Impl::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device
     SetFloat(params, "DLSSNR.MVecScaleX", mvScaleX);
     SetFloat(params, "DLSSNR.MVecScaleY", mvScaleY);
 
-    SetFloat(params, "DLSSNR.Intensity", cfg.DlssNrIntensity.value_or_default());
-    SetUInt(params, "DLSSNR.Style", (unsigned int) cfg.DlssNrStyle.value_or_default());
-    SetFloat(params, "DLSSNR.LocalStructureStrength", cfg.DlssNrLocalStructure.value_or_default());
-    SetFloat(params, "DLSSNR.LocalToneStrength", cfg.DlssNrLocalTone.value_or_default());
-    SetFloat(params, "DLSSNR.SkinStructureStrength", cfg.DlssNrSkinStructure.value_or_default());
-    SetUInt(params, "DLSSNR.UseAutoMask", cfg.DlssNrAutoMask.value_or_default() ? 1u : 0u);
+    SetFloat(params, "DLSSNR.Intensity", settings.intensity);
+    SetUInt(params, "DLSSNR.Style", (unsigned int) settings.style);
+    SetFloat(params, "DLSSNR.LocalStructureStrength", settings.localStructure);
+    SetFloat(params, "DLSSNR.LocalToneStrength", settings.localTone);
+    SetFloat(params, "DLSSNR.SkinStructureStrength", settings.skinStructure);
+    SetUInt(params, "DLSSNR.UseAutoMask", settings.autoMask ? 1u : 0u);
 
     const auto result = NVNGXProxy::D3D12_EvaluateFeature()(cmdList, state.feature, params, nullptr);
 
@@ -294,16 +294,29 @@ Context::Context() : _impl(std::make_unique<Impl>()) {}
 Context::~Context() { _impl->Release(); }
 void Context::Release() { _impl->Release(); }
 
+unsigned int Context::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, unsigned int width,
+                              unsigned int height, const Settings& settings, uint64_t submissionEpoch, bool* ready)
+{
+    return _impl->Prepare(cmdList, device, width, height, settings, submissionEpoch, ready);
+}
+bool Context::HasFeature() const { return _impl->state.feature != nullptr; }
+bool Context::Ready(uint64_t epoch) const
+{
+    return HasFeature() && !_impl->state.failed && epoch != _impl->state.creationEpoch;
+}
+void Context::AdvanceEpoch(uint64_t epoch) { _impl->TickRetired(epoch); }
+
 unsigned int Context::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color,
                           ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output, unsigned int width,
                           unsigned int height, unsigned int guideWidth, unsigned int guideHeight,
                           unsigned int motionWidth, unsigned int motionHeight, unsigned int depthBaseX,
                           unsigned int depthBaseY, unsigned int motionBaseX, unsigned int motionBaseY,
-                          bool depthInverted, bool reset, float mvScaleX, float mvScaleY, bool* evaluated)
+                          bool depthInverted, bool reset, float mvScaleX, float mvScaleY, const Settings& settings,
+                          uint64_t submissionEpoch, bool* evaluated)
 {
     return _impl->Run(cmdList, device, color, depth, motion, output, width, height, guideWidth, guideHeight,
-                      motionWidth, motionHeight, depthBaseX, depthBaseY, motionBaseX, motionBaseY,
-                      depthInverted, reset, mvScaleX, mvScaleY, evaluated);
+                      motionWidth, motionHeight, depthBaseX, depthBaseY, motionBaseX, motionBaseY, depthInverted, reset,
+                      mvScaleX, mvScaleY, settings, submissionEpoch, evaluated);
 }
 } // namespace Proxy
 } // namespace DlssNr

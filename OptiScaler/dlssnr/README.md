@@ -10,8 +10,8 @@ NVIDIA; the model ships in driver packages and is not redistributed here.
 The shaders implement `Shader_Dx12` / `Shader_Vk` and receive explicit colour, depth, motion, output
 and frame metadata. Shared composition constants live in `DlssNr_Common.h`. The ordinary model,
 scratch buffers, history, capture and timing are associated with that shader instance. D3D12's
-finished-picture and deferred schedules also belong to the instance. The forwarder separately
-caches API initialization and function tables at module scope.
+finished-picture and deferred schedules also belong to the instance. All model calls use the NGX
+core installed with the NVIDIA driver; there is no separate NR helper DLL.
 
 Both APIs use the same `SetupShaderPipeline` / `DispatchShaderPipeline` pattern before and after the
 upscaler. D3D11-to-D3D12 and Vulkan-to-D3D12 bridges inherit the D3D12 implementation. Native D3D11
@@ -61,15 +61,16 @@ does not implement these schedules and does not substitute a different private u
 The menu receives value-only status snapshots and issues retry/capture requests. It does not own or
 retain any GPU resources. A failure in one instance does not replace another instance's model state.
 
-`[DlssNr] UseProxy=true` selects the driver's NGX interface on D3D12 paths. This route uses a dedicated
-capability parameter map, the SDK's typed setters, and the same encode/model/resolve stages as the
-forwarder route. It does not load the forwarder, and a driver error disables the pass without silently
-falling back. `UseProxy=false` remains the default because successful model creation and visual output
-through the driver still need runtime verification. Multipass configurations use the forwarder backend
-with an explicit log message, because the proxy supports one model context and base tuning only.
-Native Vulkan continues to use its forwarder.
-Both settings are available in the Neural Rendering menu and are saved with the configuration.
-See `FORWARDER_INVESTIGATION.md` for the historical results and the corrected parameter handling.
+The driver's NGX dispatcher is mandatory. It discovers and evaluates feature 18 using the separately
+supplied `nvngx_dlssnr.dll`; OptiScaler owns the model contexts and uses typed SDK parameter setters.
+`UseProxy` no longer selects a backend. Driver failures remain visible, with no direct-snippet,
+embedded-helper or extracted-helper fallback.
+
+A Cyberpunk 2077 test reached successful model creation and evaluation with the former helper DLL
+physically absent. Hardware tests also passed independent identical-profile contexts and repeated
+evaluations on DX12 and native Vulkan; the production DX12 context passed submission-epoch and
+tuning-recreation checks. These used synthetic textures. Full gameplay stability and visual correctness
+remain unverified. See `FORWARDER_INVESTIGATION.md` for the evidence and its limits.
 
 Ordinary NR remains at the upscaler boundary, before later game UI rendering. Finished-picture mode
 is a separate, implemented late path; it must not be described as having the same UI isolation.
@@ -93,9 +94,8 @@ test. These checks do not validate a real driver's NR output or every game's res
 
 Ordinary D3D12 feature/texture retirement retains the existing 32-evaluate delay; that is not a GPU
 fence guarantee. Deferred/late generations have their own completion and retirement rules. Vulkan
-waits for the device before replacing model resources. The forwarder's module-level runtime cache
-remains a separate lifetime concern; per-feature shader ownership does not establish unrestricted
-multi-device support for that service.
+waits for the device before replacing model resources. Per-feature ownership does not by itself
+establish unrestricted multi-device support in the installed NGX core.
 
 The exposure scanner accepts one device until a GPU-safe shutdown and rejects foreign-device
 resources. Finished-picture teardown retains main's five-second wait; a timeout is not proof that
@@ -109,8 +109,7 @@ the runtime `Enabled` setting, which is off by default.
 **The procedure, in full:**
 
 1. Delete `OptiScaler/dlssnr/` and `OptiScaler/shaders/dlssnr/`.
-2. Drop `dlssnr_forwarder.vcxproj` from the solution.
-3. Remove the integration points below and the `[DlssNr]` block in `Config.h` / `Config.cpp`.
+2. Remove the integration points below and the `[DlssNr]` block in `Config.h` / `Config.cpp`.
 
 | File | Role |
 |---|---|
@@ -121,7 +120,7 @@ the runtime `Enabled` setting, which is off by default.
 | `menu/menu_common.cpp` | settings panel and cost row |
 | `Config.h` / `Config.cpp` | `[DlssNr]` declarations and configuration read/write |
 
-Also remove the module's project entries and forwarder packaging references. Vulkan integration
+Also remove the module's project entries and NR packaging documentation. Vulkan integration
 includes extension negotiation; search for `DlssNr` references before removing the module.
 
 The config block is contiguous and marked `removable as one block` at both ends, so it lifts out
@@ -135,8 +134,7 @@ Scaling chain, so the bug stayed invisible until something else called it.
 ## Files
 
 The pass itself lives under `shaders/dlssnr/`, dispatched like every other shader here. What stays in
-`dlssnr/` contains the menu, status, capture, model backends, exposure scan,
-forwarder and proxy route.
+`dlssnr/` contains the menu, status, capture, model backends, exposure scan and driver-dispatch context.
 
 | File | Role |
 |---|---|
@@ -147,9 +145,8 @@ forwarder and proxy route.
 | `DlssNr_Capture.h` | matched before/after frame dumps |
 | `PassProfiles.h` | shared per-pass model profiles and tuning inheritance |
 | `DlssNr_ExposureScan.h/.cpp` | observed exposure candidates and calibration controls |
-| `DlssNr_Proxy.h/.cpp` | the experiment in reaching the model through the driver core instead of the forwarder; see `FORWARDER_INVESTIGATION.md` |
-| `forwarder/` | the caller-gate shim, built by `dlssnr_forwarder.vcxproj` into the release layout |
-| `shaders/dlssnr/DlssNr_Dx12.h/.cpp` | the pass: forwarder loading, feature lifetime, the evaluate path, encode/resolve orchestration, capture |
+| `DlssNr_Proxy.h/.cpp` | owned driver-dispatched model contexts and typed parameters; see `FORWARDER_INVESTIGATION.md` |
+| `shaders/dlssnr/DlssNr_Dx12.h/.cpp` | feature lifetime, driver evaluation, encode/resolve orchestration and capture |
 | `shaders/dlssnr/DlssNr_DeferredSr.inl`, `shaders/dlssnr/DlssNr_Late.inl` | owned deferred and finished-picture schedules |
 | `shaders/dlssnr/DlssNr_Vk.h/.cpp` | Vulkan shader, owned intermediate image and model backend |
 | `upscalers/ShaderPipeline_Dx12.h`, `upscalers/ShaderPipeline_Vk.h` | shared setup/dispatch contract used for both placement stages |
@@ -183,12 +180,13 @@ their upstream licence text before any build is distributed.
 What is not theirs: the OkLab matrices are Bjorn Ottosson's published constants, and the AP1, sRGB
 and PQ transforms are standard colour science.
 
-## Why a forwarder DLL exists
+## Runtime dependencies
 
-The model's snippet resolves the module that owns its caller's return address and refuses any whose
-path does not contain `nvngx.dll`. The forwarder (`nvngx.dll_dlssnr.dll`, ~13 KB) exists only to
-satisfy that check; every NGX call to the model originates from it. It contains no NVIDIA code, is
-part of the solution, and builds with everything else.
+NR requires OptiScaler, the user's compatible `nvngx_dlssnr.dll`, and the NGX core already installed
+with the NVIDIA driver. No separate NR helper is built or packaged. The release manifest explicitly
+lists allowed files, so obsolete helper binaries left in a build directory cannot enter a package.
+The dispatcher route is this project's implementation; public RenoDX source does not establish its
+feature-18 calling path, and the colour-composition credit should not be read as such a claim.
 
 ## Design notes worth knowing before changing anything
 
@@ -197,8 +195,8 @@ part of the solution, and builds with everything else.
   chroma added. The deferred and RR-residual schedules then derive a signed difference from that
   composed result; their residual transport is a separate stage with its own numerical guards.
 - **Create-time parameters.** The model's tuning (preset, style, intensity, local *) is latched at
-  feature creation; changes rebuild the feature after a settle. The driver's parameter block is not
-  the SDK header's vtable (floats sit at slot 6); the forwarder probes it. Rebuilding every frame
+  feature creation; changes rebuild the feature after a settle. Parameter calls use the SDK's typed
+  setters rather than guessed virtual-table slots. Rebuilding every frame
   exhausts the driver's latches and the feature stops responding until the process restarts, which
   is why the rebuild is debounced.
 - **Creation work must execute before evaluation.** Ordinary model creation waits for a later

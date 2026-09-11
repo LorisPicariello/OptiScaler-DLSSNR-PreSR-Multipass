@@ -1,4 +1,4 @@
-# Package the ordinary OptiScaler dependencies and the open-source NR forwarder.
+# Package OptiScaler and its ordinary dependencies. NR uses the installed driver's NGX dispatcher.
 # NVIDIA model/FG runtimes and unrelated optional payloads are never collected from build folders.
 param(
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
@@ -28,18 +28,10 @@ if (-not $SkipBuild) {
 }
 
 $buildRoot = Join-Path $root 'x64/Release'
-$forwarder = Join-Path $buildRoot 'a/nvngx.dll_dlssnr.dll'
-$exports = @('dlssnr_call_create', 'dlssnr_call_evaluate_v2', 'dlssnr_call_set_extras',
-             'dlssnr_vk_probe', 'dlssnr_vk_init', 'dlssnr_vk_create', 'dlssnr_vk_evaluate_v2', 'dlssnr_vk_release')
-$binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($forwarder))
-$missing = @($exports | Where-Object { $binaryText.IndexOf($_, [StringComparison]::Ordinal) -lt 0 })
-if ($missing.Count) { throw "Stale forwarder: missing $($missing -join ', ')" }
-
 # Validate every source before creating the staging tree. An explicit manifest prevents stale
-# Streamline/MFG or discarded experiment files from a previous build entering this package.
+# Streamline/MFG, removed NR helpers or discarded experiment files entering this package.
 $files = @{}
 $files['OptiScaler.dll'] = Join-Path $buildRoot 'OptiScaler.dll'
-$files['nvngx.dll_dlssnr.dll'] = $forwarder
 foreach ($name in @('OptiScaler.ini', 'setup_windows.bat', 'setup_linux.sh', 'README.md', 'INSTALL-DLSSNR.md', 'LICENSE',
                     'Features.md', 'Config.md', 'Spoofing.md', 'images/gh-sponsor-red.png', 'images/bmac.png',
                     'OptiScaler/dlssnr/README.md')) {

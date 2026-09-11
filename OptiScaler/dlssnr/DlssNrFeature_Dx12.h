@@ -19,7 +19,6 @@ void FinishedPictureResetCommandList(ID3D12CommandList* cmd);
 void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
 void ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue);
 void FinishedPictureColorSpace(IDXGISwapChain* swapchain, DXGI_COLOR_SPACE_TYPE colorSpace);
-void ProbeD3D11(void* d3d11Device);
 
 // Suggested exposure calibration and steadiness; the user chooses whether to apply it.
 struct CalibrationReading

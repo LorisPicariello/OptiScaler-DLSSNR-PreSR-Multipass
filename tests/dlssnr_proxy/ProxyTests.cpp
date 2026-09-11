@@ -10,13 +10,17 @@ int main()
     ID3D12GraphicsCommandList commands;
     ID3D12Resource color, depth, motion, output;
     bool evaluated = true;
-    auto run = [&]
+    uint64_t epoch = 0;
+    DlssNr::Proxy::Settings settings { 0, 0, 0.5f, 1.0f, 0.0f, -1.0f, true };
+    auto run = [&](bool advance = true)
     {
-        return proxy.Run(&commands, &device, &color, &depth, &motion, &output, 1920, 1080, 1280, 720,
-                         1920, 1080, 12, 24, 32, 48, true, false, 0.5f,
-                         -0.25f, &evaluated);
+        if (advance)
+            ++epoch;
+        return proxy.Run(&commands, &device, &color, &depth, &motion, &output, 1920, 1080, 1280, 720, 1920, 1080, 12,
+                         24, 32, 48, true, false, 0.5f, -0.25f, settings, epoch, &evaluated);
     };
-    auto value = []<typename T>(const char* key) {
+    auto value = []<typename T>(const char* key)
+    {
         T result {};
         assert(Mock::latest->Get(key, &result) == NVSDK_NGX_Result_Success);
         return result;
@@ -24,6 +28,8 @@ int main()
 
     // Creation has its own frame, and setters must preserve SDK types (not raw vtable offsets).
     assert(run() == NVSDK_NGX_Result_Success && !evaluated);
+    assert(Mock::creations == 1 && Mock::evaluations == 0);
+    assert(run(false) == NVSDK_NGX_Result_Success && !evaluated);
     assert(Mock::creations == 1 && Mock::evaluations == 0);
     assert(value.operator()<unsigned int>("DLSSNR.Width") == 1920);
     assert(value.operator()<unsigned int>("DLSSNR.Hint.Render.Preset") == 0);
@@ -46,10 +52,13 @@ int main()
     assert(value.operator()<unsigned int>("DLSSNR.Reset") == 0);
 
     // Creation-time tuning edits rebuild; the previous GPU feature/map survive the retirement window.
-    Config::Instance()->DlssNrPreset.value = 2;
+    settings.preset = 2;
     assert(run() == NVSDK_NGX_Result_Success && !evaluated);
     assert(Mock::creations == 2 && Mock::releases == 0 && Mock::destructions == 0);
     assert(value.operator()<unsigned int>("DLSSNR.Hint.Render.Preset") == 2);
+    for (int call = 0; call < 40; ++call)
+        assert(run(false) == NVSDK_NGX_Result_Success && !evaluated);
+    assert(Mock::releases == 0 && Mock::destructions == 0);
     for (int frame = 0; frame < 31; ++frame)
         assert(run() == NVSDK_NGX_Result_Success && evaluated);
     assert(Mock::releases == 0 && Mock::destructions == 0);
@@ -83,14 +92,18 @@ int main()
         DlssNr::Proxy::Context other;
         assert(run() == NVSDK_NGX_Result_Success && !evaluated);
         auto* firstParams = Mock::latest;
+        DlssNr::Proxy::Settings otherSettings { 3, 2, 0.75f, 0.4f, 0.3f, 0.2f, false };
         auto runOther = [&]
         {
-            return other.Run(&commands, &device, &color, &depth, &motion, &output, 1280, 720, 1280, 720,
-                             1280, 720, 0, 0, 0, 0, false, false,
-                             1.0f, 1.0f, &evaluated);
+            return other.Run(&commands, &device, &color, &depth, &motion, &output, 1280, 720, 1280, 720, 1280, 720, 0,
+                             0, 0, 0, false, false, 1.0f, 1.0f, otherSettings, ++epoch, &evaluated);
         };
         assert(runOther() == NVSDK_NGX_Result_Success && !evaluated);
         auto* secondParams = Mock::latest;
+        assert(value.operator()<unsigned int>("DLSSNR.Hint.Render.Preset") == 3);
+        assert(value.operator()<unsigned int>("DLSSNR.Style") == 2);
+        assert(value.operator()<float>("DLSSNR.LocalToneStrength") == 0.3f);
+        assert(value.operator()<unsigned int>("DLSSNR.UseAutoMask") == 0);
         assert(firstParams != secondParams && Mock::handles.size() == 2);
         auto creations = Mock::creations;
         assert(run() == NVSDK_NGX_Result_Success && evaluated);

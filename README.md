@@ -44,7 +44,10 @@ reversible colour composition and skin/environment controls. D3D12 also retains 
 calibration/exposure and deferred-DLSS/residual composition options. D3D11 and Vulkan bridges reuse
 D3D12 processing; native Vulkan has its own owned shader pipeline.
 
-Neural Rendering is off by default and requires a separately supplied compatible model runtime.
+Neural Rendering is off by default. It uses OptiScaler, your separately supplied `nvngx_dlssnr.dll`,
+and the NGX core installed with the NVIDIA driver. No separate NR helper DLL is supplied or required.
+Cyberpunk 2077 testing reached driver-dispatched NR creation and evaluation with the former helper
+physically absent; full gameplay, visual correctness, native Vulkan and multipass validation remain pending.
 See the [NR installation guide](INSTALL-DLSSNR.md), [implementation notes](OptiScaler/dlssnr/README.md)
 and [NR credits](docs/CREDITS.md). The upstream download links below describe official OptiScaler;
 they do not imply that these experimental branch features have been merged upstream.
