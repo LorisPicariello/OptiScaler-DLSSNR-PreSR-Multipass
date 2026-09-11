@@ -230,7 +230,7 @@ void RenderMenu(Config* config, float menuResScale)
 
             if (reason[0] != 0)
             {
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f), "Off for this session: %s.", reason);
+                ImGui::Text("Off for this session: %s.", reason);
                 ImGui::SameLine();
 
                 if (nativeVk)
@@ -265,14 +265,13 @@ void RenderMenu(Config* config, float menuResScale)
                 !config->DlssNrApplyModel.value_or_default() ? "  (model running, edit hidden)" : "";
 
             if (ms.has_value())
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running%s - %.2f ms elapsed%s",
-                                   vulkan ? " natively on Vulkan" : "", ms.value(), runSuffix);
+                ImGui::Text("Running%s - %.2f ms elapsed%s", vulkan ? " natively on Vulkan" : "", ms.value(),
+                            runSuffix);
             else if (vulkan)
                 // Measured but not yet read: the first few frames are still in the query ring.
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running natively on Vulkan - %llu frames%s",
-                                   DlssNr::FramesVk(), runSuffix);
+                ImGui::Text("Running natively on Vulkan - %llu frames%s", DlssNr::FramesVk(), runSuffix);
             else
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Running.%s", runSuffix);
+                ImGui::Text("Running.%s", runSuffix);
 
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
@@ -287,29 +286,16 @@ void RenderMenu(Config* config, float menuResScale)
 
         ImGui::SeparatorText("Performance");
 
-        bool unlockPasses = config->DlssNrUnlockPasses.value_or_default();
-        if (ImGui::Checkbox("Lift model pass limit (up to 30; expensive)", &unlockPasses))
-            config->DlssNrUnlockPasses = unlockPasses;
-        HelpMarker("Allow up to 30 passes instead of 3. More passes use more GPU time and VRAM; high values may crash the game.");
-        const unsigned int passLimit = unlockPasses ? MaxPassCount : DefaultMaxPassCount;
-
+        // Keep the UI simple; advanced INI pass settings remain available.
+        constexpr int menuPassLimit = 2;
         {
-            int passes = (int) std::clamp(config->DlssNrPasses.value_or_default(), 1u,
-                                          passLimit);
-            const ImVec4 colour = passes <= 1   ? ImVec4(0.35f, 0.88f, 0.38f, 1.0f)
-                                  : passes == 2 ? ImVec4(0.95f, 0.70f, 0.20f, 1.0f)
-                                                : ImVec4(0.92f, 0.30f, 0.25f, 1.0f);
+            int passes = (int) std::clamp(config->DlssNrPasses.value_or_default(), 1u, (unsigned int) menuPassLimit);
+            if (ImGui::SliderInt("Model passes", &passes, 1, menuPassLimit,
+                                 passes == 1 ? "%d (normal)" : "%dx model cost", ImGuiSliderFlags_AlwaysClamp))
+                config->DlssNrPasses = (uint32_t) std::clamp(passes, 1, menuPassLimit);
 
-            ImGui::PushStyleColor(ImGuiCol_Text, colour);
-            ImGui::PushStyleColor(ImGuiCol_SliderGrab, colour);
-
-            if (ImGui::SliderInt("Model passes", &passes, 1, (int) passLimit,
-                                 passes == 1 ? "%d (normal)" : "%dx model cost"))
-                config->DlssNrPasses = (uint32_t) std::clamp(passes, 1, (int) passLimit);
-
-            ImGui::PopStyleColor(2);
-
-            HelpMarker("Process the image repeatedly. More passes strengthen the effect and increase GPU cost.\nEach pass has its own settings and history. Start with 1.");
+            HelpMarker("Choose 1 or 2 model passes. A second pass strengthens the effect and increases GPU cost.\nEach "
+                       "pass has its own settings and history. Start with 1.");
         }
 
         // Any percentage, rather than a handful of steps somebody chose in advance. The lower bound
@@ -453,56 +439,6 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::TreePop();
         }
 
-        if (ImGui::TreeNodeEx("Pass 3", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            ImGui::TextWrapped("Defaults: inherit Pass 1; Local tone = 0. Reset restores these defaults.");
-            InheritedProfileCombo("Style", &config->DlssNrPass3Style, inheritedStyles, IM_ARRAYSIZE(inheritedStyles));
-            DeferredSlider("Intensity", &config->DlssNrPass3Intensity, 0.0f, 2.0f, config->DlssNrIntensity.value_or_default(), "%.2f", true);
-            DeferredSlider("Local structure", &config->DlssNrPass3LocalStructure, 0.0f, 2.0f, config->DlssNrLocalStructure.value_or_default(), "%.2f", true);
-            DeferredSlider("Local tone", &config->DlssNrPass3LocalTone, 0.0f, 2.0f, 0.0f, "%.2f", true);
-            DeferredSlider("Skin structure", &config->DlssNrPass3SkinStructure, -1.0f, 2.0f, config->DlssNrSkinStructure.value_or_default(), "%.2f", true);
-            bool mask = config->DlssNrPass3AutoMask.has_value() ? config->DlssNrPass3AutoMask.value() : config->DlssNrAutoMask.value_or_default();
-            if (ImGui::Checkbox("Auto skin mask", &mask))
-                config->DlssNrPass3AutoMask = mask;
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Reset##mask"))
-                config->DlssNrPass3AutoMask = std::optional<bool> {};
-            ImGui::TreePop();
-        }
-
-        const unsigned int visiblePasses = std::clamp(config->DlssNrPasses.value_or_default(), 1u, passLimit);
-        for (unsigned int pass = 3; pass < visiblePasses; ++pass)
-        {
-            auto& settings = config->DlssNrExtraPasses[pass - 3];
-            if (!ImGui::TreeNode(std::format("Pass {}", pass + 1).c_str()))
-                continue;
-            ImGui::TextWrapped("Defaults: inherit Pass 1; Local tone = 0.");
-            InheritedProfileCombo("Style", &settings.style, inheritedStyles, IM_ARRAYSIZE(inheritedStyles));
-            DeferredSlider("Intensity", &settings.intensity, 0.0f, 2.0f, config->DlssNrIntensity.value_or_default(), "%.2f", true);
-            DeferredSlider("Local structure", &settings.structure, 0.0f, 2.0f, config->DlssNrLocalStructure.value_or_default(), "%.2f", true);
-            DeferredSlider("Local tone", &settings.tone, 0.0f, 2.0f, 0.0f, "%.2f", true);
-            DeferredSlider("Skin structure", &settings.skin, -1.0f, 2.0f, config->DlssNrSkinStructure.value_or_default(), "%.2f", true);
-            bool mask = settings.autoMask.value_or(config->DlssNrAutoMask.value_or_default());
-            if (ImGui::Checkbox("Auto skin mask", &mask))
-                settings.autoMask = mask;
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Reset##mask"))
-                settings.autoMask = std::optional<bool> {};
-            ImGui::TreePop();
-        }
-
-        if (ImGui::TreeNode("Advanced preset hints (effect unverified)"))
-        {
-            ImGui::TextWrapped("Experimental model hints; visual effect unverified. Use Style to select a profile.");
-            static const char* presets[] = { "Default", "Preset 1", "Preset 2", "Preset 3" };
-            static const char* inheritedPresets[] = { "Auto (inherit pass 1)", "Default", "Preset 1", "Preset 2", "Preset 3" };
-            int preset = (int) std::min(config->DlssNrPreset.value_or_default(), 3u);
-            if (ImGui::Combo("Pass 1 preset hint", &preset, presets, IM_ARRAYSIZE(presets)))
-                config->DlssNrPreset = (uint32_t) preset;
-            InheritedProfileCombo("Pass 2 preset hint", &config->DlssNrPass2Preset, inheritedPresets, IM_ARRAYSIZE(inheritedPresets));
-            InheritedProfileCombo("Pass 3 preset hint", &config->DlssNrPass3Preset, inheritedPresets, IM_ARRAYSIZE(inheritedPresets));
-            ImGui::TreePop();
-        }
         ImGui::TextWrapped("Pass settings apply to SR and RR on DX12 and native Vulkan.");
 
         ImGui::SeparatorText("Colour");
@@ -555,7 +491,7 @@ void RenderMenu(Config* config, float menuResScale)
         // state being REACHED; a single choice cannot reach it, because there is only one value to
         // be in.
         //
-        // Each option also says whether it can actually do anything in THIS game, in colour, so the
+        // Each option also says whether it can actually do anything in THIS game, so the
         // choice is made on what is available rather than on what sounds best.
         {
             const auto ex = DlssNr::GameExposureStatus();
@@ -582,27 +518,25 @@ void RenderMenu(Config* config, float menuResScale)
                 // step, and so no way for the two to disagree.
             }
 
-            HelpMarker("Manual: use Paper white. Game exposure: use exposure supplied by the game.\nScanned exposure: estimate it from game buffers; requires calibration and may select the wrong buffer.");
+            HelpMarker(
+                "Manual: use Paper white. Game exposure: use exposure supplied by the game.\nScanned exposure: "
+                "estimate it from game buffers; requires calibration and may select the wrong buffer.");
 
-            // Availability, in colour, for the option currently chosen.
+            // Availability for the option currently chosen, using the HDR-adjusted theme.
             if (source == 1)
             {
                 if (!vk && ex.seenFrames == 0)
                     ImGui::TextDisabled("Waiting for a frame...");
                 else if (!haveExposure)
-                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
-                                       "No game exposure available. Using manual paper white.");
+                    ImGui::TextDisabled("No game exposure available. Using manual paper white.");
                 else if (vk)
-                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "Using game exposure.");
+                    ImGui::TextDisabled("Using game exposure.");
                 else if (ex.exposure > 1e-6f)
                 {
-                    const float trim =
-                        std::clamp(config->DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
-                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "Game exposure %.4f  ->  white point %.2f%s", ex.exposure,
-                                       ex.preExposure / ex.exposure * trim,
-                                       ex.offeredNow ? "" : "  (held: absent this frame)");
+                    const float trim = std::clamp(config->DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
+                    ImGui::TextDisabled("Game exposure %.4f  ->  white point %.2f%s", ex.exposure,
+                                        ex.preExposure / ex.exposure * trim,
+                                        ex.offeredNow ? "" : "  (held: absent this frame)");
                 }
                 else
                     ImGui::TextDisabled("Reading exposure...");
@@ -618,23 +552,19 @@ void RenderMenu(Config* config, float menuResScale)
                     const unsigned int watching = (unsigned int) DlssNr::ExposureScan::Report().size();
 
                     if (watching == 0)
-                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
-                                           "No exposure candidates found.");
+                        ImGui::TextDisabled("No exposure candidates found.");
                     else
-                        ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
-                                           "%u candidates; move between bright and dark areas to test them.",
-                                           watching);
+                        ImGui::TextDisabled("%u candidates; move between bright and dark areas to test them.",
+                                            watching);
                 }
                 else if (!haveAnchor)
-                    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.25f, 1.0f),
-                                       "Exposure candidate found. Adjust Paper white, then select Anchor here.");
+                    ImGui::TextDisabled("Exposure candidate found. Adjust Paper white, then select Anchor here.");
                 // Once anchored, the scan -> white point readout sits above the sliders below; it is
                 // not repeated up here.
             }
             else if (haveExposure)
             {
-                ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                   "Game exposure is available.");
+                ImGui::TextDisabled("Game exposure is available.");
             }
         }
 
@@ -706,9 +636,8 @@ void RenderMenu(Config* config, float menuResScale)
                         liveScan, config->DlssNrScanInverted.value_or_default(),
                         config->DlssNrScanTrim.value_or_default());
 
-                    ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                       "Scan %.5f  ->  white point %.2f   (%u point%s)", liveScan, w,
-                                       (unsigned) anchors.size(), anchors.size() == 1 ? "" : "s");
+                    ImGui::TextDisabled("Scan %.5f  ->  white point %.2f   (%u point%s)", liveScan, w,
+                                        (unsigned) anchors.size(), anchors.size() == 1 ? "" : "s");
                 }
             }
 
@@ -811,7 +740,7 @@ void RenderMenu(Config* config, float menuResScale)
         // Highlight guard, directly under the white point / trim -- it bounds the model's edit and
         // belongs with the exposure controls it works alongside.
         float maxRatio = config->DlssNrMaxRatio.value_or_default();
-        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, unlockPasses ? (float) MaxPassCount : 8.0f, "%.1fx"))
+        if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
             config->DlssNrMaxRatio = maxRatio;
 
         ImGui::SameLine();
@@ -1004,12 +933,11 @@ void RenderMenu(Config* config, float menuResScale)
                                 continue;
                             }
 
-                            // Moving is the whole signal, so it is the thing that is coloured.
-                            ImGui::TextColored(c.moves ? ImVec4(0.45f, 0.8f, 0.45f, 1.0f)
-                                                       : ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-                                               "%zu. %s = %.5f  (seen %.5f..%.5f) %s", i + 1,
-                                               c.shape.c_str(), c.latest, c.lowest, c.highest,
-                                               c.moves ? "MOVES" : "flat so far");
+                            // Keep moving candidates readable and dim inactive ones using the HDR-adjusted theme.
+                            ImGui::TextColored(
+                                ImGui::GetStyleColorVec4(c.moves ? ImGuiCol_Text : ImGuiCol_TextDisabled),
+                                "%zu. %s = %.5f  (seen %.5f..%.5f) %s", i + 1, c.shape.c_str(), c.latest, c.lowest,
+                                c.highest, c.moves ? "MOVES" : "flat so far");
                         }
 
                         ImGui::TextDisabled("Move between bright and dark areas to check exposure tracking.");
