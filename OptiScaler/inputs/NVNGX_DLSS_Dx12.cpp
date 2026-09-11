@@ -3,8 +3,10 @@
 #include "Config.h"
 
 #include "NVNGX_DLSS.h"
+#include "NgxFeatureRegistry.h"
 #include "NVNGX_Parameter.h"
 #include "proxies/NVNGX_Proxy.h"
+#include "dlssnr/DlssNr_ExposureScan.h"
 #include <upscalers/dlss/DLSSFeature_Dx12.h>
 #include <shaders/output_scaling/OS_Dx12.h>
 
@@ -26,7 +28,7 @@
 #include <misc/IdentifyGpu.h>
 
 static ankerl::unordered_dense::map<unsigned int, ContextData<IFeature_Dx12>> Dx12Contexts;
-static std::unordered_map<unsigned int, NVSDK_NGX_Feature> HandleToFeature;
+static NgxFeatureRegistry HandleToFeature;
 
 static ID3D12Device* D3D12Device = nullptr;
 static int evalCounter = 0;
@@ -370,13 +372,14 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_with_ProjectID(
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
 {
+    DlssNr::ExposureScan::ReleaseTrackedResources();
     shutdown = true;
     State::Instance().nvngxDx12Inited = false;
 
     State::Instance().currentFeature = nullptr;
     // Retire owned NR models before shutting down the NGX device they were created on.
     Dx12Contexts.clear();
-    HandleToFeature.clear();
+    HandleToFeature.Clear();
 
     // Unhooking and cleaning stuff causing issues during shutdown.
     // Disabled for now to check if it cause any issues
@@ -421,11 +424,12 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown(void)
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Shutdown1(ID3D12Device* InDevice)
 {
+    DlssNr::ExposureScan::ReleaseTrackedResources();
     shutdown = true;
     State::Instance().nvngxDx12Inited = false;
     State::Instance().currentFeature = nullptr;
     Dx12Contexts.clear();
-    HandleToFeature.clear();
+    HandleToFeature.Clear();
 
     if (State::Instance().activeFgNvngx != FGNvngxReplacement::None)
     {
@@ -769,10 +773,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
 
         NVSDK_NGX_Result res = Nvngx_FG::D3D12_CreateFeature(InCmdList, InFeatureID, InParameters, OutHandle);
 
-        if (*OutHandle)
+        if (res == NVSDK_NGX_Result_Success && *OutHandle)
         {
             LOG_INFO("Created modded DLSSG feature with HandleId: {}", (*OutHandle)->Id);
-            HandleToFeature[(*OutHandle)->Id] = InFeatureID;
+            HandleToFeature.Record((*OutHandle)->Id, InFeatureID);
         }
 
         return res;
@@ -788,10 +792,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
 
             NVSDK_NGX_Result res = NVNGXProxy::D3D12_CreateFeature()(InCmdList, InFeatureID, InParameters, OutHandle);
 
-            if (*OutHandle)
+            if (res == NVSDK_NGX_Result_Success && *OutHandle)
             {
                 LOG_INFO("Native CreateFeature success, HandleId: {}", (*OutHandle)->Id);
-                HandleToFeature[(*OutHandle)->Id] = InFeatureID;
+                HandleToFeature.Record((*OutHandle)->Id, InFeatureID);
             }
             else
             {
@@ -808,8 +812,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
     // OptiScaler internal handling (SuperSampling or RayReconstruction)
     auto tryResult = TryCreateOptiFeature(InCmdList, InFeatureID, InParameters, OutHandle);
 
-    if (tryResult == NVSDK_NGX_Result_Success)
-        HandleToFeature[(*OutHandle)->Id] = InFeatureID;
+    if (tryResult == NVSDK_NGX_Result_Success && *OutHandle)
+        HandleToFeature.Record((*OutHandle)->Id, InFeatureID);
 
     return tryResult;
 }
@@ -821,8 +825,14 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     if (!InHandle)
         return NVSDK_NGX_Result_Success;
 
+    // Before any feature's resources are freed, drop the exposure scan's references to whatever it
+    // captured. The scan AddRef's candidates and never released them; a Streamline/DLSS-D resource it
+    // pinned would otherwise be used after its heap is freed here -- the Cyberpunk device-removal.
+    // Capture is gated on NR being enabled (not the scan source), so this drops whatever was captured
+    // whenever NR is on; a no-op only when NR is off.
+    DlssNr::ExposureScan::ReleaseTrackedResources();
+
     auto handleId = InHandle->Id;
-    HandleToFeature.erase(handleId);
 
     // Clean up framegen
     if (State::Instance().currentFG != nullptr && State::Instance().activeFgInput == FGInput::Upscaler)
@@ -850,6 +860,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
             if (!shutdown)
                 LOG_INFO("D3D12_ReleaseFeature result for ({0}): {1:X}", handleId, (UINT) result);
 
+            if (result == NVSDK_NGX_Result_Success)
+                HandleToFeature.Forget(handleId);
             return result;
         }
         else
@@ -864,7 +876,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     else if (State::Instance().activeFgNvngx != FGNvngxReplacement::None && handleId >= NVNGX_PROVIDER_ID_OFFSET)
     {
         LOG_INFO("D3D12_ReleaseFeature modded DLSSG with HandleId: {0}", handleId);
-        return Nvngx_FG::D3D12_ReleaseFeature(InHandle);
+        const auto result = Nvngx_FG::D3D12_ReleaseFeature(InHandle);
+        if (result == NVSDK_NGX_Result_Success)
+            HandleToFeature.Forget(handleId);
+        return result;
     }
 
     // Remove feature from context map
@@ -889,6 +904,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
             LOG_ERROR("can't release feature with id {0}!", handleId);
     }
 
+    HandleToFeature.Forget(handleId);
     return NVSDK_NGX_Result_Success;
 }
 
@@ -1064,7 +1080,9 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
         UpscalerInputsDx12::UpscaleEnd(InCmdList, InParameters, feature);
 
         ScopedSkipHeapCapture skip {};
-        evalSuccess = feature->Evaluate(InCmdList, InParameters);
+        const bool sourceRayReconstruction =
+            HandleToFeature.Read(handleId).feature == NVSDK_NGX_Feature_RayReconstruction;
+        evalSuccess = feature->Evaluate(InCmdList, InParameters, nullptr, 0, sourceRayReconstruction);
     }
 
     if (!evalSuccess)
@@ -1109,10 +1127,23 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     const State& state = State::Instance();
     const Config& cfg = *Config::Instance();
 
-    auto feature = HandleToFeature[handleId];
+    const auto tracked = HandleToFeature.Read(handleId);
+    const auto feature = tracked.feature;
+    bool nrUpscale = feature == NVSDK_NGX_Feature_SuperSampling || feature == NVSDK_NGX_Feature_RayReconstruction;
+    bool rayReconstruction = feature == NVSDK_NGX_Feature_RayReconstruction;
+    // A live OptiScaler backend is additional evidence, especially if the
+    // creation record is absent or an SR handle has switched to DLSSD.
+    if (auto it = Dx12Contexts.find(handleId); it != Dx12Contexts.end() && it->second.feature)
+    {
+        nrUpscale = true;
+        rayReconstruction |= it->second.feature->GetUpscalerType() == Upscaler::DLSSD;
+    }
+    if (!tracked.feature && !nrUpscale)
+        LOG_DEBUG("DLSS-NR: skipping untracked NGX handle {}; original evaluate is preserved", handleId);
+    LOG_DEBUG("DLSS-NR route: handle {}, NGX feature {}, upscaler {}, RR {}", handleId,
+              tracked.feature ? (int) *tracked.feature : -1, nrUpscale, rayReconstruction);
     static size_t evalWithoutFG = 0;
-    bool fgCreated = std::any_of(HandleToFeature.begin(), HandleToFeature.end(),
-                                 [](const auto& pair) { return pair.second == NVSDK_NGX_Feature_FrameGeneration; });
+    const bool fgCreated = tracked.frameGenerationCreated;
 
     static std::optional<float> lastDlssgCameraNear {};
     static std::optional<float> lastDlssgCameraFar {};

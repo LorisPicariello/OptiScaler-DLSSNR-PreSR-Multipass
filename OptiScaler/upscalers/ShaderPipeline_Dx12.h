@@ -2,6 +2,7 @@
 
 #include <d3d12.h>
 #include <functional>
+#include <cstdint>
 #include <vector>
 #include <nvsdk_ngx.h>
 
@@ -57,10 +58,12 @@ inline bool DispatchShaderPipeline(ShaderPipeline_Dx12& pipeline)
 // These adapters only translate NGX inputs and resource states. The shader owns all NR resources/history.
 ShaderPass_Dx12 MakeDlssNrPass(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12GraphicsCommandList* commandList,
                                NVSDK_NGX_Parameter* parameters, bool beforeUpscale, unsigned int featureFlags,
-                               ID3D12CommandQueue* timingQueue = nullptr, bool interop = false);
+                               ID3D12CommandQueue* timingQueue = nullptr, bool interop = false,
+                               bool rayReconstruction = false, uint64_t submissionEpoch = 0);
 ID3D12Resource* PrepareDlssNrInput(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12GraphicsCommandList* commandList,
                                    NVSDK_NGX_Parameter* parameters, unsigned int featureFlags,
-                                   ID3D12CommandQueue* timingQueue = nullptr, bool interop = false);
+                                   ID3D12CommandQueue* timingQueue = nullptr, bool interop = false,
+                                   bool rayReconstruction = false, uint64_t submissionEpoch = 0);
 
 // Parameter restoration belongs to the upscaler call, regardless of which shader stages ran.
 class RestoreUpscalerResources_Dx12

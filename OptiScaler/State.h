@@ -169,6 +169,7 @@ class State
     bool dlssgInterpolatedOnly = false;
     uint64_t dlssgLastFrame = 0;
     uint32_t delayMenuRenderBy = 0;
+    bool menuOverlayIsVulkan = false;
 
     // FSR Common
     float lastFsrCameraNear = 0.0f;
@@ -176,6 +177,7 @@ class State
 
     // Frame Generation
     FGInput activeFgInput = FGInput::NoFG;
+    bool externalFrameGeneration = false; // startup-only: do not switch hook ownership live
     FGOutput activeFgOutput = FGOutput::NoFG;
     // This should be set to a non-None value only if all other requirements are met and nvngx can be used
     FGNvngxReplacement activeFgNvngx = FGNvngxReplacement::None;

@@ -29,20 +29,25 @@ inline VkImageInfo ParameterImage(NVSDK_NGX_Parameter* parameters, const char* k
     parameters->Get(key, (void**) &image);
     return ImageInfo(image);
 }
-// Composition and the model forwarder currently address origin-zero subrects only.
-inline bool HasSupportedSubrects(NVSDK_NGX_Parameter* parameters)
+// The v2 guide ABI supports depth/MV offsets; composition still needs origin-zero colour/output.
+inline bool HasSupportedSubrects(NVSDK_NGX_Parameter* parameters, bool beforeUpscale)
 {
-    const char* offsets[] = {
-        NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y,
-        NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y,
-        NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X,     NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y,
-        NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X,      NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y
-    };
-    for (const auto* key : offsets)
+    const char* x = beforeUpscale ? NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X
+                                  : NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X;
+    const char* y = beforeUpscale ? NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y
+                                  : NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y;
+    unsigned int offsetX = 0, offsetY = 0;
+    parameters->Get(x, &offsetX);
+    parameters->Get(y, &offsetY);
+    if (offsetX || offsetY)
+        return false;
+    if (beforeUpscale)
     {
-        unsigned int offset = 0;
-        if (parameters->Get(key, &offset) == NVSDK_NGX_Result_Success && offset != 0)
-            return false;
+        const auto colour = ParameterImage(parameters, NVSDK_NGX_Parameter_Color);
+        unsigned int width = 0, height = 0;
+        parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &width);
+        parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &height);
+        return colour.Image && ((width == 0) == (height == 0)) && width <= colour.Width && height <= colour.Height;
     }
     return true;
 }
@@ -60,6 +65,7 @@ inline DlssNrFrameInfo_Vk FrameInfo(NVSDK_NGX_Parameter* parameters, bool before
     parameters->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &flags);
     parameters->Get(NVSDK_NGX_Parameter_Reset, &reset);
     frame.DepthInverted = (flags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
+    frame.MotionVectorsLowResolution = (flags & NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) != 0;
     frame.ColourIsLinearHdr = (flags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0;
     frame.Reset = reset != 0;
     frame.BeforeUpscale = beforeUpscale;
@@ -67,12 +73,24 @@ inline DlssNrFrameInfo_Vk FrameInfo(NVSDK_NGX_Parameter* parameters, bool before
     parameters->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &frame.MvScaleY);
     parameters->Get(NVSDK_NGX_Parameter_ExposureTexture, &frame.ExposureTexture);
     parameters->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &frame.PreExposure);
-    parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &frame.GuideWidth);
-    parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &frame.GuideHeight);
-    if (beforeUpscale)
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &frame.RenderSubrectWidth);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &frame.RenderSubrectHeight);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, &frame.ColorSubrectBaseX);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, &frame.ColorSubrectBaseY);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, &frame.DepthSubrectBaseX);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, &frame.DepthSubrectBaseY);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, &frame.MotionSubrectBaseX);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, &frame.MotionSubrectBaseY);
+    const auto output = ParameterImage(parameters, NVSDK_NGX_Parameter_Output);
+    frame.OutputWidth = output.Width;
+    frame.OutputHeight = output.Height;
+    unsigned int width = 0, height = 0;
+    parameters->Get(NVSDK_NGX_Parameter_OutWidth, &width);
+    parameters->Get(NVSDK_NGX_Parameter_OutHeight, &height);
+    if (width && height)
     {
-        frame.Width = frame.GuideWidth;
-        frame.Height = frame.GuideHeight;
+        frame.OutputWidth = width;
+        frame.OutputHeight = height;
     }
     return frame;
 }

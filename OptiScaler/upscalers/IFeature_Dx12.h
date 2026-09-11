@@ -35,7 +35,8 @@ class IFeature_Dx12 : public virtual IFeature
   public:
     bool Init(ID3D12Device* InDevice, ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters);
     bool Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters,
-                  ID3D12CommandQueue* timingQueue = nullptr);
+                  ID3D12CommandQueue* timingQueue = nullptr, uint64_t submissionEpoch = 0,
+                  bool sourceRayReconstruction = false);
 
     API Api() const override { return API::DX12; }
     std::optional<double> ReadUpscalerTime(void* commandQueue) override;

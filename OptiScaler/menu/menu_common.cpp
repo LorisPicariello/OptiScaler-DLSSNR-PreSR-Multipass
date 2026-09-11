@@ -1,10 +1,15 @@
 ﻿#include "pch.h"
 #include "menu_common.h"
+#include <framegen/dlssg/MfgUnlock.h>
+#include <framegen/dlssg/AmpereMfgLoader.h>
+#include <dlssnr/DlssNr_ExposureScan.h>
 
 #include <algorithm>
 #include <cfloat>
 
 #include <dlssnr/DlssNr.h>
+
+
 
 #include "input/input_system.h"
 
@@ -302,7 +307,7 @@ void MenuCommon::ShowTooltip(const char* tip)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     {
         ImGui::BeginTooltip();
-        ImGui::Text(tip);
+        ImGui::TextUnformatted(tip);
         ImGui::EndTooltip();
     }
 }
@@ -506,7 +511,7 @@ void MenuCommon::AddDx11Backends(Upscaler upscaler)
 {
     RenderUpscalerCombo(API::DX11, upscaler,
                         { Upscaler::XeSS, Upscaler::FSR22, Upscaler::FSR31, Upscaler::XeSS_on12, Upscaler::FSR21_on12,
-                          Upscaler::FSR22_on12, Upscaler::FFX_on12, Upscaler::DLSS });
+                          Upscaler::FSR22_on12, Upscaler::FFX_on12, Upscaler::DLSS, Upscaler::DLSS_on12 });
 }
 
 void MenuCommon::AddDx12Backends(Upscaler upscaler)
@@ -1623,8 +1628,14 @@ void MenuCommon::BeginMenuFrameIfNeeded(RenderMenuContext& ctx)
     auto& newFrame = ctx.newFrame;
 
     // New frame check
+    // The lamp is drawn while the menu is closed, which is the whole point of it. Tied to its own
+    // setting and nothing else: an overlay that appears because a scan is running, rather than
+    // because someone asked for it, is an overlay nobody asked for.
+    const bool scanIndicator = config->DlssNrScanMeter.value_or_default() &&
+                               DlssNr::ExposureScan::Where() != DlssNr::ExposureScan::Verdict::Off;
+
     if ((!config->DisableSplash.value_or_default() && now > splashStart && now < splashLimit) ||
-        config->ShowFps.value_or_default() || _isVisible || ImGui::notifications.size() > 0 ||
+        config->ShowFps.value_or_default() || _isVisible || ImGui::notifications.size() > 0 || scanIndicator ||
         (config->DlssNrCompare.value_or_default() != 0 && config->DlssNrCompareTags.value_or_default()))
     {
         if (!_isUWP)
@@ -3201,10 +3212,162 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
     auto config = ctx.config;
+    bool external = config->ExternalFrameGeneration.value_or_default();
+    const bool ampereActive = config->FGDLSSGAmpereMfgUnlock.value_or_default();
+    if (ampereActive)
+    {
+        external = true;
+        ImGui::BeginDisabled();
+        ImGui::Checkbox("External frame generation / MFG unlocker", &external);
+        ImGui::EndDisabled();
+        ShowHelpMarker("Automatically locked to enabled because the Ampere (SM86) MFG unlocker is active.\n"
+                       "To disable External FG, disable Ampere SM86 MFG below first.");
+    }
+    else
+    {
+        if (ImGui::Checkbox("External frame generation / MFG unlocker", &external))
+            config->ExternalFrameGeneration = external;
+        ShowHelpMarker("Leaves Streamline, Reflex and FG control to the game/external mod."
+                       "\nNR and NGX upscaling remain available. Save Settings and restart."
+                       "\nDoes not install an unlocker or enable FG in unsupported games.");
+    }
+    if (external != state.externalFrameGeneration)
+        ImGui::TextWrapped("Save Settings and restart to change frame-generation ownership.");
+
     auto& menuResScale = ctx.menuResScale;
     auto& primaryGpu = *ctx.primaryGpu;
 
     /// FG INPUTS
+    bool adaUnlock = config->FGDLSSGAdaMfgUnlock.value_or_default();
+    const bool disableAda = ampereActive || state.externalFrameGeneration;
+
+    if (disableAda)
+    {
+        ImGui::BeginDisabled();
+        ImGui::Checkbox("Built-in RTX 40 MFG unlock (experimental; restart)", &adaUnlock);
+        ImGui::EndDisabled();
+        if (ampereActive)
+        {
+            ShowHelpMarker("Disabled because the Ampere (RTX 30) SM86 MFG unlock is active.\n"
+                           "Disable AmpereMfgUnlock first, Save Settings and restart.");
+        }
+        else
+        {
+            ShowHelpMarker("Disabled because External frame generation is active.\n"
+                           "Disable External FG first, Save Settings and restart.");
+        }
+    }
+    else
+    {
+        if (ImGui::Checkbox("Built-in RTX 40 MFG unlock (experimental; restart)", &adaUnlock))
+            config->FGDLSSGAdaMfgUnlock = adaUnlock;
+        ShowHelpMarker("Optional y4my4my4m Ada unlock. Save Settings and restart to enable or remove it.\n"
+                       "Requires a supported DLSSG runtime and Streamline 2.7.1+ for multiplier overrides.\n"
+                       "Do not combine with another MFG unlocker. Does not add FG to an unsupported game.\n"
+                       "Not validated on RTX 40 hardware here; RTX 20/30/50 are left unchanged.");
+    }
+    if (adaUnlock && !disableAda)
+    {
+        const auto& status = MfgUnlock::LastStatus();
+        ImGui::TextWrapped("DLSSG %s: capability %s, validation %s, retargeted kernel groups %u",
+                           status.SnippetVersion.empty() ? "not patched" : status.SnippetVersion.c_str(),
+                           status.AdvertiseMatched ? "matched" : "not matched",
+                           status.ValidateMatched ? "matched" : "not matched", status.KernelsRewritten);
+    }
+
+    // ── Ampere/Turing (SM86/SM75) MFG Unlock ─────────────────────────
+    if (ImGui::CollapsingHeader("RTX 20 / 30 (SM75 / SM86) MFG Unlock"))
+    {
+        ImGui::Indent();
+
+        bool ampereUnlock = config->FGDLSSGAmpereMfgUnlock.value_or_default();
+
+        // Mutual exclusion: disable if Ada is already enabled
+        const bool adaActive = config->FGDLSSGAdaMfgUnlock.value_or_default();
+        if (adaActive)
+        {
+            ImGui::BeginDisabled();
+            ImGui::Checkbox("Enable SM86/SM75 MFG (experimental; restart)##ampere", &ampereUnlock);
+            ImGui::EndDisabled();
+            ShowHelpMarker("Disabled because the Ada (RTX 40) MFG unlock is active.\n"
+                           "Disable AdaMfgUnlock first, Save Settings and restart.");
+        }
+        else
+        {
+            if (ImGui::Checkbox("Enable SM86/SM75 MFG (experimental; restart)##ampere", &ampereUnlock))
+            {
+                config->FGDLSSGAmpereMfgUnlock = ampereUnlock;
+                if (ampereUnlock)
+                {
+                    config->ExternalFrameGeneration = true;
+                    config->FGDLSSGAdaMfgUnlock = false;
+                }
+            }
+            ShowHelpMarker("sdli1995 Ampere/Turing unlock. Sideloads the dlssg_for_sm86 proxy.\n"
+                           "Auto-enables External FG mode: the game controls MFG from its own menu.\n"
+                           "Supports RTX 20 (SM75) and RTX 30 (SM86) series. Save Settings and restart.\n"
+                           "Do not combine with the Ada unlock or another external MFG unlocker.");
+        }
+
+        if (ampereUnlock)
+        {
+            // Status display
+            const auto& status = AmpereMfgLoader::LastStatus();
+            if (!status.ErrorMessage.empty())
+                ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Error: %s", status.ErrorMessage.c_str());
+            else
+            {
+                std::string routerStr = AmpereMfgLoader::ResolveRouter();
+                ImGui::TextWrapped("DLL: %s | Router: %s | INI: %s | Loaded: %s",
+                                   status.DllFound ? "found" : "missing",
+                                   routerStr.c_str(),
+                                   status.IniWritten ? "written" : "not written",
+                                   status.DllLoaded ? "yes" : "no");
+            }
+
+            // MaxGeneratedFrames slider
+            int maxFrames = config->FGDLSSGAmpereMfgMaxFrames.value_or_default();
+            const char* frameLabels[] = { "Capability default (3X)", "1 (2X)", "2 (3X)", "3 (4X)" };
+            const char* currentLabel = (maxFrames >= 0 && maxFrames <= 3) ? frameLabels[maxFrames] : "Capability default (3X)";
+            if (ImGui::SliderInt("Max Generated Frames##sm86", &maxFrames, 0, 3, currentLabel))
+                config->FGDLSSGAmpereMfgMaxFrames = maxFrames;
+            ShowHelpMarker("Advertised maximum (1=2X, 2=3X, 3=4X). The game chooses the actual count.\n"
+                           "0 = Default capability limit (allows up to 4X).\n"
+                           "Save Settings and restart to apply.");
+
+            // KernelImage combo
+            std::string resolvedAuto = AmpereMfgLoader::ResolveAutoKernelImage();
+            std::string autoLabel = (resolvedAuto != "Auto") ? "Auto (" + resolvedAuto + " on this GPU)" : "Auto";
+            const char* kernelOptions[] = { autoLabel.c_str(), "PTX", "Cubin" };
+            std::string current = config->FGDLSSGAmpereMfgKernelImage.value_or("Auto");
+            int kernelIdx = (current == "PTX") ? 1 : (current == "Cubin") ? 2 : 0;
+            if (ImGui::Combo("Kernel Image##sm86", &kernelIdx, kernelOptions, 3))
+            {
+                const char* storedOptions[] = { "Auto", "PTX", "Cubin" };
+                config->FGDLSSGAmpereMfgKernelImage = std::string(storedOptions[kernelIdx]);
+            }
+            ShowHelpMarker("Auto: resolves to optimal format (PTX on Linux/Proton, RTX 3080 Ti, or Turing).\n"
+                           "PTX: JIT-compiled driver path, recommended for Linux/Proton, RTX 3080 Ti, and RTX 20 series.\n"
+                           "Cubin: precompiled binary, requires exact physical SM match on Windows.\n"
+                           "Save Settings and restart to apply.");
+
+            // HardwareBilinear checkbox
+            bool hwBilinear = config->FGDLSSGAmpereMfgHardwareBilinear.value_or_default();
+            if (ImGui::Checkbox("Hardware Bilinear (approximate sampling)##sm86", &hwBilinear))
+                config->FGDLSSGAmpereMfgHardwareBilinear = hwBilinear;
+            ShowHelpMarker("SM86 (RTX 30 series) only. 0 = exact output (default); 1 = optional approximate\n"
+                           "hardware bilinear sampling for ~2-4% additional GPU latency reduction.\n"
+                           "Save Settings and restart to apply.");
+        }
+
+        ImGui::Unindent();
+    }
+
+    if (state.externalFrameGeneration)
+    {
+        ImGui::TextWrapped("External FG is active. Set the multiplier in the game or unlocker, not OptiScaler.");
+        return;
+    }
 
     static std::vector<MenuOption<FGInput>> inputOptions;
     inputOptions.clear();
@@ -7257,7 +7420,7 @@ void MenuCommon::RenderMainMenuGraphs(RenderMenuContext& ctx)
                         if (nrTime.has_value())
                         {
                             ImGui::TableNextColumn();
-                            ImGui::Text("Neural Rendering");
+                            ImGui::Text("Neural Rendering (elapsed)");
                             ImGui::TableNextColumn();
                             ImGui::Text(StrFmt("%.2f ms", nrTime.value()).c_str());
                         }
@@ -7763,6 +7926,95 @@ void KeyUp(UINT vKey)
     inputFpsCycle = vKey == Config::Instance()->FpsCycleShortcutKey.value_or_default();
 }
 
+// The lamp, and only the lamp.
+//
+// Red for dark, green for full light, with its reading beside it. No status sentence: the whole
+// point of a light meter is that it is read at a glance while playing, and a paragraph in the corner
+// of somebody's game is not that. Everything wordy lives in the menu, which is where someone has
+// already decided to stop and read.
+//
+// Drawn only when its own setting is on. An overlay that appears because a scan happens to be
+// running is an overlay nobody asked for.
+void RenderExposureScanIndicator(float alpha)
+{
+    using DlssNr::ExposureScan::Verdict;
+
+    if (!Config::Instance()->DlssNrScanMeter.value_or_default())
+        return;
+
+    if (DlssNr::ExposureScan::Where() == Verdict::Off)
+        return;
+
+    int which = 0;
+    float low = 0.0f, high = 0.0f;
+    const float now = DlssNr::ExposureScan::BestValue(&which, &low, &high);
+
+    // Nothing found yet, or no range to place it in: a dim lamp, which says "watching, no reading"
+    // without saying it in words.
+    const bool reading = now > 0.0f && high > low;
+
+    float lit = 0.0f;
+
+    if (reading)
+    {
+        // An exposure falls as the scene brightens, so the value reads backwards unless the buffer
+        // holds the reciprocal -- the same question the anchor asks, answered from the same setting,
+        // because a lamp contradicting the picture would be worse than no lamp.
+        lit = (high - now) / (high - low);
+
+        if (Config::Instance()->DlssNrScanInverted.value_or_default())
+            lit = 1.0f - lit;
+
+        lit = lit < 0.0f ? 0.0f : (lit > 1.0f ? 1.0f : lit);
+    }
+
+    // Red to amber to green. A straight red-to-green fade passes through a muddy brown at the
+    // midpoint, and the midpoint is where most of a session is spent.
+    const ImVec4 dark(0.90f, 0.22f, 0.20f, 1.0f);
+    const ImVec4 mid(0.95f, 0.75f, 0.20f, 1.0f);
+    const ImVec4 bright(0.35f, 0.88f, 0.38f, 1.0f);
+    const ImVec4 idle(0.45f, 0.45f, 0.45f, 1.0f);
+
+    ImVec4 lamp = idle;
+
+    if (reading)
+    {
+        const float t = lit < 0.5f ? lit * 2.0f : (lit - 0.5f) * 2.0f;
+        const ImVec4& a = lit < 0.5f ? dark : mid;
+        const ImVec4& b = lit < 0.5f ? mid : bright;
+        lamp = ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, 1.0f);
+    }
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 12.0f, vp->WorkPos.y + 12.0f),
+                            ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(alpha);
+
+    if (ImGui::Begin("DlssNrExposureScan", nullptr,
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDecoration |
+                         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove))
+    {
+        const float r = ImGui::GetFontSize() * 0.38f;
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const ImVec2 centre(at.x + r, at.y + ImGui::GetTextLineHeight() * 0.5f);
+
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        draw->AddCircleFilled(centre, r, ImGui::GetColorU32(lamp), 20);
+        draw->AddCircle(centre, r, ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.6f)), 20, 1.5f);
+
+        ImGui::Dummy(ImVec2(r * 2.0f + 6.0f, ImGui::GetTextLineHeight()));
+        ImGui::SameLine();
+
+        if (reading)
+            ImGui::TextColored(lamp, "%3.0f%%  %.5f", lit * 100.0f, now);
+        else
+            ImGui::TextColored(idle, "--");
+    }
+
+    ImGui::End();
+}
+
 bool MenuCommon::RenderMenu()
 {
     if (!_isInited)
@@ -7788,6 +8040,7 @@ bool MenuCommon::RenderMenu()
     RenderNotifications(ctx);
     UpdateFrameTimeAverages(ctx);
     RenderPerformanceOverlay(ctx);
+    RenderExposureScanIndicator(ctx.config->FpsOverlayAlpha.value_or_default());
 
     // 4) Draw the full settings menu last so popups and child windows keep their existing behavior.
     RenderMainMenuWindow(ctx);

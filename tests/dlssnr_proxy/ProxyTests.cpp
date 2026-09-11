@@ -12,7 +12,8 @@ int main()
     bool evaluated = true;
     auto run = [&]
     {
-        return proxy.Run(&commands, &device, &color, &depth, &motion, &output, 1920, 1080, 1280, 720, true, false, 0.5f,
+        return proxy.Run(&commands, &device, &color, &depth, &motion, &output, 1920, 1080, 1280, 720,
+                         1920, 1080, 12, 24, 32, 48, true, false, 0.5f,
                          -0.25f, &evaluated);
     };
     auto value = []<typename T>(const char* key) {
@@ -30,7 +31,15 @@ int main()
     assert(run() == NVSDK_NGX_Result_Success && evaluated);
     assert(value.operator()<ID3D12Resource*>("DLSSNR.Color") == &color);
     assert(value.operator()<ID3D12Resource*>("DLSSNR.Output") == &output);
+    // High-resolution motion and guide offsets must survive the typed NGX dispatch independently.
     assert(value.operator()<unsigned int>("DLSSNR.DepthSubrectWidth") == 1280);
+    assert(value.operator()<unsigned int>("DLSSNR.DepthSubrectHeight") == 720);
+    assert(value.operator()<unsigned int>("DLSSNR.DepthSubrectBaseX") == 12);
+    assert(value.operator()<unsigned int>("DLSSNR.DepthSubrectBaseY") == 24);
+    assert(value.operator()<unsigned int>("DLSSNR.MVecSubrectWidth") == 1920);
+    assert(value.operator()<unsigned int>("DLSSNR.MVecSubrectHeight") == 1080);
+    assert(value.operator()<unsigned int>("DLSSNR.MVecSubrectBaseX") == 32);
+    assert(value.operator()<unsigned int>("DLSSNR.MVecSubrectBaseY") == 48);
     assert(value.operator()<float>("DLSSNR.MVecScaleY") == -0.25f);
     assert(value.operator()<unsigned int>("DLSSNR.Reset") == 1);
     assert(run() == NVSDK_NGX_Result_Success && evaluated);
@@ -76,7 +85,8 @@ int main()
         auto* firstParams = Mock::latest;
         auto runOther = [&]
         {
-            return other.Run(&commands, &device, &color, &depth, &motion, &output, 1280, 720, 1280, 720, false, false,
+            return other.Run(&commands, &device, &color, &depth, &motion, &output, 1280, 720, 1280, 720,
+                             1280, 720, 0, 0, 0, 0, false, false,
                              1.0f, 1.0f, &evaluated);
         };
         assert(runOther() == NVSDK_NGX_Result_Success && !evaluated);

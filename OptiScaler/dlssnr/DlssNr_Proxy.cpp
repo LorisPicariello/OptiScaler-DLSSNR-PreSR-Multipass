@@ -109,8 +109,10 @@ struct Context::Impl
     void Release();
     unsigned int Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color,
                      ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output, unsigned int width,
-                     unsigned int height, unsigned int guideWidth, unsigned int guideHeight, bool depthInverted,
-                     bool reset, float mvScaleX, float mvScaleY, bool* evaluated);
+                     unsigned int height, unsigned int guideWidth, unsigned int guideHeight,
+                     unsigned int motionWidth, unsigned int motionHeight, unsigned int depthBaseX,
+                     unsigned int depthBaseY, unsigned int motionBaseX, unsigned int motionBaseY,
+                     bool depthInverted, bool reset, float mvScaleX, float mvScaleY, bool* evaluated);
 };
 
 void Context::Impl::RetireState()
@@ -160,14 +162,17 @@ void Context::RetryAfterFailure() { _impl->RetireState(); }
 unsigned int Context::Impl::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color,
                                 ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output,
                                 unsigned int width, unsigned int height, unsigned int guideWidth,
-                                unsigned int guideHeight, bool depthInverted, bool reset, float mvScaleX,
+                                unsigned int guideHeight, unsigned int motionWidth, unsigned int motionHeight,
+                                unsigned int depthBaseX, unsigned int depthBaseY, unsigned int motionBaseX,
+                                unsigned int motionBaseY, bool depthInverted, bool reset, float mvScaleX,
                                 float mvScaleY, bool* evaluated)
 {
     if (evaluated != nullptr)
         *evaluated = false;
 
     if (state.failed || cmdList == nullptr || device == nullptr || color == nullptr || depth == nullptr ||
-        motion == nullptr || output == nullptr || width == 0 || height == 0 || guideWidth == 0 || guideHeight == 0)
+        motion == nullptr || output == nullptr || width == 0 || height == 0 || guideWidth == 0 || guideHeight == 0 ||
+        motionWidth == 0 || motionHeight == 0)
         return 0;
 
     if (!NVNGXProxy::IsDx12Inited() && !NVNGXProxy::InitDx12(device))
@@ -248,14 +253,14 @@ unsigned int Context::Impl::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device
     SetUInt(params, "DLSSNR.OutputSubrectBaseY", 0u);
     SetUInt(params, "DLSSNR.OutputSubrectWidth", width);
     SetUInt(params, "DLSSNR.OutputSubrectHeight", height);
-    SetUInt(params, "DLSSNR.DepthSubrectBaseX", 0u);
-    SetUInt(params, "DLSSNR.DepthSubrectBaseY", 0u);
+    SetUInt(params, "DLSSNR.DepthSubrectBaseX", depthBaseX);
+    SetUInt(params, "DLSSNR.DepthSubrectBaseY", depthBaseY);
     SetUInt(params, "DLSSNR.DepthSubrectWidth", guideWidth);
     SetUInt(params, "DLSSNR.DepthSubrectHeight", guideHeight);
-    SetUInt(params, "DLSSNR.MVecSubrectBaseX", 0u);
-    SetUInt(params, "DLSSNR.MVecSubrectBaseY", 0u);
-    SetUInt(params, "DLSSNR.MVecSubrectWidth", guideWidth);
-    SetUInt(params, "DLSSNR.MVecSubrectHeight", guideHeight);
+    SetUInt(params, "DLSSNR.MVecSubrectBaseX", motionBaseX);
+    SetUInt(params, "DLSSNR.MVecSubrectBaseY", motionBaseY);
+    SetUInt(params, "DLSSNR.MVecSubrectWidth", motionWidth);
+    SetUInt(params, "DLSSNR.MVecSubrectHeight", motionHeight);
 
     // The game's own encoding, passed through. Deriving this from the resolutions was a guess, and
     // at native resolution it came out as exactly 1.0 -- so a game using normalised vectors was
@@ -291,10 +296,13 @@ void Context::Release() { _impl->Release(); }
 
 unsigned int Context::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, ID3D12Resource* color,
                           ID3D12Resource* depth, ID3D12Resource* motion, ID3D12Resource* output, unsigned int width,
-                          unsigned int height, unsigned int guideWidth, unsigned int guideHeight, bool depthInverted,
-                          bool reset, float mvScaleX, float mvScaleY, bool* evaluated)
+                          unsigned int height, unsigned int guideWidth, unsigned int guideHeight,
+                          unsigned int motionWidth, unsigned int motionHeight, unsigned int depthBaseX,
+                          unsigned int depthBaseY, unsigned int motionBaseX, unsigned int motionBaseY,
+                          bool depthInverted, bool reset, float mvScaleX, float mvScaleY, bool* evaluated)
 {
     return _impl->Run(cmdList, device, color, depth, motion, output, width, height, guideWidth, guideHeight,
+                      motionWidth, motionHeight, depthBaseX, depthBaseY, motionBaseX, motionBaseY,
                       depthInverted, reset, mvScaleX, mvScaleY, evaluated);
 }
 } // namespace Proxy

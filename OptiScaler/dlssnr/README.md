@@ -8,8 +8,11 @@ NVIDIA; the model ships in driver packages and is not redistributed here.
 
 `IFeature_Dx12` and `IFeature_Vk` each own a Neural Rendering shader alongside RCAS and output scaling.
 The shaders implement `Shader_Dx12` / `Shader_Vk` and receive explicit colour, depth, motion, output
-and frame metadata. Shared composition constants live in `DlssNr_Common.h`. Model handles, parameter
-maps, scratch resources, history, capture and timing belong to the owning instance.
+and frame metadata. Shared composition constants live in `DlssNr_Common.h`. The ordinary model,
+scratch buffers, history, capture and timing are associated with that shader instance. D3D12's
+finished-picture and deferred schedules also belong to the instance. This is not a claim that every
+GPU allocation is per-feature: `DlssNrNative` retains a device-service cache for the experimental
+NVFP4 hybrid runtime, and the forwarder caches API initialization and function tables.
 
 Both APIs use the same `SetupShaderPipeline` / `DispatchShaderPipeline` pattern before and after the
 upscaler. D3D11-to-D3D12 and Vulkan-to-D3D12 bridges inherit the D3D12 implementation. Native D3D11
@@ -20,11 +23,41 @@ backends. The input hooks no longer dispatch NR separately. Their unrelated NGX 
 remain untouched. Releasing an upscaler releases its NR instance; shutdown clears owned contexts
 before the NGX core is shut down.
 
-`[DlssNr] BeforeUpscale=false` keeps the post-upscale placement. Setting it to `true` runs the pass
-on a private copy of the input colour before super resolution; the game's original input and NGX
-colour parameter are restored. Ray Reconstruction continues to run Neural Rendering after the
-upscaler, since its input still needs denoising. This placement control also applies to native Vulkan.
-Non-zero resource subrect offsets are currently excluded from NR; logical extents must fit the images.
+`[DlssNr] RunBeforeSR=false` keeps the post-upscale placement. Setting it to `true` runs NR through
+an owned colour buffer before the game's upscaler, preserving the original colour texture and
+restoring its NGX parameter. Both SR and RR+SR use this placement control, including native Vulkan;
+RR identity is carried separately for history and experimental residual routing. `BeforeUpscale`
+is accepted only as a legacy load fallback when `RunBeforeSR` is absent; configuration saves use
+`RunBeforeSR`.
+
+Padded colour allocations use the active render rectangle. Depth and motion-vector subrect offsets
+are supported, with motion vectors interpreted at render or output resolution according to their
+feature flags. Colour/output composition still requires an origin-zero rectangle. Unsupported
+pre-SR colour shapes or extents select the ordinary post-upscale fallback where its output is valid.
+
+`Passes` controls the model stack. Pass 1 uses the base preset, style and tuning; optional `Pass2*`
+and `Pass3*` settings specialize later passes. `UnlockPasses` enables up to 30 passes, with additional
+style/tuning overrides for passes 4–30. Unset controls inherit the base tuning except that later
+passes default local tone to zero. `PassProfiles.h` is shared by the D3D12 and Vulkan implementations.
+
+The D3D12 shader's `ProcessSeam` handles the additional schedules. The pre-seam and post-seam receive
+the same final-output identity; ordinary NR shader dispatch is suppressed when a specialized
+schedule owns the frame. D3D11/Vulkan bridges supply their submitted-frame epoch, while native
+D3D12 uses the Present epoch, so a newly created model is not evaluated before its creation work
+has been submitted.
+
+- `FinishedPicture` captures at the upscaler seam and runs the configured later processing through
+  command-list, submission and swapchain hooks. Those hooks select a registered, owned shader
+  instance rather than a separate global NR pipeline.
+- `DeferredDLSS` generates NR's signed contribution before SR, upscales that contribution with a
+  private DLSS feature, then composes it after the game's upscaler. It takes precedence over ordinary
+  placement on supported SR paths. See `docs/DEFERRED-NR-DLSS.md`.
+- `ResidualAcrossRR` with `RunBeforeSR` preserves RR's original colour input and carries NR's edit
+  across RR+SR using a reprojected residual history. `ResidualFG` adds an experimental interpolation
+  path to deferred processing; these modes have their own pairing and history requirements.
+
+Finished-picture/deferred scheduling is a D3D12 facility, including its API bridges. Native Vulkan
+does not implement these schedules and does not substitute a different private upscaler.
 
 The menu receives value-only status snapshots and issues retry/capture requests. It does not own or
 retain any GPU resources. A failure in one instance does not replace another instance's model state.
@@ -33,12 +66,15 @@ retain any GPU resources. A failure in one instance does not replace another ins
 capability parameter map, the SDK's typed setters, and the same encode/model/resolve stages as the
 forwarder route. It does not load the forwarder, and a driver error disables the pass without silently
 falling back. `UseProxy=false` remains the default because successful model creation and visual output
-through the driver still need runtime verification. Native Vulkan continues to use its forwarder.
+through the driver still need runtime verification. Multipass configurations use the forwarder backend
+with an explicit log message, because the proxy supports one model context and base tuning only.
+Native Vulkan continues to use its forwarder.
 Both settings are available in the Neural Rendering menu and are saved with the configuration.
 See `FORWARDER_INVESTIGATION.md` for the historical results and the corrected parameter handling.
 
-The suggested Present-time filter and HUD mask are future extensions. This implementation runs at
-the upscaler boundary, before the game's later UI rendering.
+Ordinary NR remains at the upscaler boundary, before later game UI rendering. Finished-picture mode
+is a separate, implemented late path; it must not be described as having the same UI isolation.
+There is no general-purpose HUD detector guaranteeing that arbitrary late game UI is excluded.
 
 ### Validation
 
@@ -52,12 +88,19 @@ msbuild OptiScaler.sln /m /p:Configuration=Release /p:Platform=x64 /p:PostBuildE
 The focused tests compile the production proxy code with a mock NGX backend and the real SDK
 parameter interface. They cover typed parameters, independent model instances, creation/recreation,
 failure/retry, deferred cleanup, menu-status lifetime, pipeline ordering and bridge parameter
-restoration. They do not validate a real driver's model output or in-game resource states.
+restoration. Additional CPU and WARP smoke tests exercise active colour rectangles, guide metadata,
+residual composition, skin controls and scheduling helpers; the Vulkan shader has a separate smoke
+test. These checks do not validate a real driver's NR output or every game's resource states.
 
-D3D12 feature/texture retirement retains the existing 32-evaluate delay; that is not a GPU fence
-guarantee. Vulkan waits for the device before replacing model resources. The forwarder still caches
-its API initialization and function tables at module scope; this refactor does not add multi-device
-support to that helper DLL. Present-time processing and HUD masking remain separate future work.
+Ordinary D3D12 feature/texture retirement retains the existing 32-evaluate delay; that is not a GPU
+fence guarantee. Deferred/late generations have their own completion and retirement rules. Vulkan
+waits for the device before replacing model resources. The forwarder's module-level runtime cache
+and the native hybrid device-service cache remain separate lifetime concerns; per-feature shader
+ownership does not establish unrestricted multi-device support for those services.
+
+The exposure scanner accepts one device until a GPU-safe shutdown and rejects foreign-device
+resources. Finished-picture teardown retains main's five-second wait; a timeout is not proof that
+its GPU resources are idle. These inherited lifetime limits still require runtime validation.
 
 ## For maintainers: how to remove it
 
@@ -74,6 +117,8 @@ the runtime `Enabled` setting, which is off by default.
 |---|---|
 | `upscalers/IFeature_Dx12.h/.cpp` | owned NR shader and before/after stages, including D3D12 bridges |
 | `upscalers/IFeature_Vk.h/.cpp` | owned NR shader and native Vulkan before/after stages |
+| `wrapped/wrapped_swapchain.cpp`, `hooks/D3D12_Hooks.cpp` | finished-picture presentation and command submission hooks |
+| `resource_tracking/ResTrack_dx12.*`, `hooks/Streamline_Hooks.cpp` | exposure/resource observations and frame metadata |
 | `menu/menu_common.cpp` | settings panel and cost row |
 | `Config.h` / `Config.cpp` | `[DlssNr]` declarations and configuration read/write |
 
@@ -91,24 +136,29 @@ Scaling chain, so the bug stayed invisible until something else called it.
 ## Files
 
 The pass itself lives under `shaders/dlssnr/`, dispatched like every other shader here. What stays in
-`dlssnr/` is the parts that are not the shader: the menu, the capture, the forwarder, the proxy
-experiment.
+`dlssnr/` contains the menu, status, capture, model backends, exposure scan, native hybrid service,
+forwarder and proxy route.
 
 | File | Role |
 |---|---|
-| `DlssNr.h`, `DlssNr_Status.h/.cpp` | menu controls and value-only status snapshots |
+| `DlssNr.h`, `DlssNr_Status.h/.cpp` | hook facades, menu controls and value-only status snapshots |
 | `DlssNrFeature_Vk.h/.cpp` | per-instance Vulkan model backend owned by `DlssNr_Vk` |
 | `DlssNrPipeline_Vk.h` | Vulkan resource/frame adapters and scoped parameter restoration |
 | `DlssNr_Menu.cpp` | the settings panel |
 | `DlssNr_Capture.h` | matched before/after frame dumps |
+| `PassProfiles.h` | shared per-pass model profiles and tuning inheritance |
+| `DlssNr_ExposureScan.h/.cpp` | observed exposure candidates and calibration controls |
+| `DlssNrNative.h/.cpp`, `DlssNrHybridAssets.h`, `DlssNrHybridBuilder.h` | experimental NVFP4 hybrid integration and device-service resources |
 | `DlssNr_Proxy.h/.cpp` | the experiment in reaching the model through the driver core instead of the forwarder; see `FORWARDER_INVESTIGATION.md` |
 | `forwarder/` | the caller-gate shim, built by `dlssnr_forwarder.vcxproj` into the release layout |
 | `shaders/dlssnr/DlssNr_Dx12.h/.cpp` | the pass: forwarder loading, feature lifetime, the evaluate path, encode/resolve orchestration, capture |
+| `shaders/dlssnr/DlssNr_DeferredSr.inl`, `shaders/dlssnr/DlssNr_Late.inl` | owned deferred and finished-picture schedules |
 | `shaders/dlssnr/DlssNr_Vk.h/.cpp` | Vulkan shader, owned intermediate image and model backend |
 | `upscalers/ShaderPipeline_Dx12.h`, `upscalers/ShaderPipeline_Vk.h` | shared setup/dispatch contract used for both placement stages |
 | `shaders/dlssnr/DlssNr_Common.h` | the constant buffer, shared by the host and the shader |
 | `shaders/dlssnr/precompile/dlssnr.hlsl` | **the live shader**: encode (scale and sRGB-encode with a soft knee), area downsample, resolve (RenoDX's two-branch composition, OkLab hue correction, AP1 clamp, the guard) |
 | `shaders/dlssnr/precompile/DlssNr_Shader.h` | that shader compiled, as bytes |
+| `shaders/dlssnr/precompile/dlssnr_residual.hlsl`, `dlssnr_finished_color.hlsl` | residual and finished-picture composition shaders |
 
 ### Editing the shader
 
@@ -144,37 +194,26 @@ part of the solution, and builds with everything else.
 
 ## Design notes worth knowing before changing anything
 
-- **Ratio composition, not a delta.** The model is shown an encoded proxy; what it returns is
+- **Ordinary composition uses a ratio.** The model is shown an encoded proxy; what it returns is
   composed back as a ratio against the original's luminance, scaled by a measured slope, with the
-  chroma added. Composing it additively — which earlier revisions did — discards the model's
-  behaviour in highlights and makes every arrangement look alike. At strength zero the frame is
-  bit-identical, always.
+  chroma added. The deferred and RR-residual schedules then derive a signed difference from that
+  composed result; their residual transport is a separate stage with its own numerical guards.
 - **Create-time parameters.** The model's tuning (preset, style, intensity, local *) is latched at
   feature creation; changes rebuild the feature after a settle. The driver's parameter block is not
   the SDK header's vtable (floats sit at slot 6); the forwarder probes it. Rebuilding every frame
   exhausts the driver's latches and the feature stops responding until the process restarts, which
   is why the rebuild is debounced.
-- **Never free under the GPU.** Every retired feature or surface is parked and freed 32 evaluates
-  later; every internal feature is created on a private queue and fenced before use. Both rules were
-  paid for with device hangs.
-- **Per-instance locking.** Every caller is on the game's render thread now, but the D3D11-on-D3D12 bridge
-  enters from its own call site, and the lock is CPU-side on a path that already records command
-  lists. It was added after a period of crashes that looked random and were not.
-- **Temporal filtering of the model's answer was measured to be a dead end** (twice, including with
-  a trained DLAA pass): the model re-decides detail with the framing, so old answers do not belong
-  to new frames. There is no accumulator; the composition is re-anchored to the model every frame
-  instead, which is what makes it steady.
-- **The model's own UI correction went with it.** It only ever acted on a UI layer the game tagged
-  through Streamline, which almost no title does, and it could not be shown to change anything when
-  one did. Removing it removed the Streamline tag hook as well, so the module no longer touches that
-  file at all. The model is created with the parameter at its own default.
-- **HUD detection was tried and removed.** Measured with grain, chromatic aberration and depth of
-  field all off, a static HUD pixel still scored 0.31 on the "did not change" test, because game
-  interfaces are translucent and animated. Separation from the world was 2.5:1 — not a detector at
-  any threshold. The interface is safe because the pass runs before it is drawn, not because
-  anything looks for it.
-- **The split pipeline was removed.** It ran Ray Reconstruction at 1:1, the model on that frame,
-  then an internal Super Resolution pass to the target size, to give the model a real temporal
-  accumulator behind it. It was removed once the plain path did the same job — but note that the
-  plain path had a bug that stopped it running the model at all, so the split was never fairly
-  compared. If detail shimmers in motion, that is the thing to look at again; it is in the history.
+- **Creation work must execute before evaluation.** Ordinary model creation waits for a later
+  submission epoch; bridge initialization explicitly submits its creation command list. Deferred
+  schedules additionally track their private generations. Preserve these boundaries when changing
+  pass count, resolution or queues, and respect the distinct retirement rules described above.
+- **Per-instance locking and hook routing.** Shader state is protected per instance. Late hooks
+  use the owner registry, whose lock also protects owner selection against destruction; they are
+  not restricted to the ordinary upscaler call site.
+- **Residual history is intentional.** Ordinary composition and model histories are distinct from
+  the RR residual accumulator, frame-hold reuse and deferred residual FG. Cuts, missed seams and
+  generation changes must invalidate the relevant residual pair/history.
+- **UI handling depends on placement.** Ordinary pre/post-upscale NR runs before later UI. Late
+  finished-picture processing uses different resources and timing. Streamline hooks now supply
+  metadata/observations, so older notes claiming this module never touches Streamline are obsolete.
+  Semantic skin controls and the model's auto mask are not general HUD detection.

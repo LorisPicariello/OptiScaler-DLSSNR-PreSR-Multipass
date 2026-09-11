@@ -5,21 +5,27 @@
 
 #include "IFeature_Dx12.h"
 #include "State.h"
+#include <dlssnr/DlssNr_ExposureScan.h>
+#include <shaders/dlssnr/DlssNr_ActiveColor.h>
 
 namespace
 {
-bool HasSupportedNrSubrects(NVSDK_NGX_Parameter* parameters)
+bool HasSupportedNrSubrects(NVSDK_NGX_Parameter* parameters, bool beforeUpscale)
 {
-    const char* offsets[] {
-        NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y,
-        NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y,
-        NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X,     NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y,
-        NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X,      NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y
-    };
+    const char* offsets[] { NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X,
+                            NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y };
     for (const auto* name : offsets)
     {
         unsigned int offset = 0;
         if (parameters->Get(name, &offset) == NVSDK_NGX_Result_Success && offset != 0)
+            return false;
+    }
+    if (beforeUpscale)
+    {
+        unsigned int x = 0, y = 0;
+        parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, &x);
+        parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, &y);
+        if (x != 0 || y != 0)
             return false;
     }
     return true;
@@ -31,6 +37,18 @@ ID3D12Resource* NrResource(NVSDK_NGX_Parameter* parameters, const char* name, co
     if (resource == nullptr)
         resource = GetUpscalerResource_Dx12(parameters, fallback);
     return resource;
+}
+
+bool CanRunNrBeforeUpscale(NVSDK_NGX_Parameter* parameters)
+{
+    auto* color = NrResource(parameters, NVSDK_NGX_Parameter_Color, "DLSSD.Color");
+    if (color == nullptr || !HasSupportedNrSubrects(parameters, true))
+        return false;
+    unsigned int width = 0, height = 0;
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &width);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &height);
+    const auto desc = color->GetDesc();
+    return desc.MipLevels == 1 && DlssNr::PreSrColorExtent(desc, width, height).has_value();
 }
 
 void NrBarrier(ID3D12GraphicsCommandList* commandList, ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
@@ -71,19 +89,56 @@ NrInputStates NrStates(bool interop)
 
 ShaderPass_Dx12 MakeDlssNrPass(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12GraphicsCommandList* commandList,
                                NVSDK_NGX_Parameter* parameters, bool beforeUpscale, unsigned int featureFlags,
-                               ID3D12CommandQueue* timingQueue, bool interop)
+                               ID3D12CommandQueue* timingQueue, bool interop, bool rayReconstruction,
+                               uint64_t submissionEpoch)
 {
     auto* color = NrResource(parameters, NVSDK_NGX_Parameter_Color, "DLSSD.Color");
     auto* depth = NrResource(parameters, NVSDK_NGX_Parameter_Depth, "DLSSD.Depth");
     auto* motion = NrResource(parameters, NVSDK_NGX_Parameter_MotionVectors, "DLSSD.MotionVectors");
     auto* exposure = NrResource(parameters, NVSDK_NGX_Parameter_ExposureTexture, "DLSSD.ExposureTexture");
     const auto states = NrStates(interop);
-    const bool supportedSubrects = HasSupportedNrSubrects(parameters);
+    const bool supportedSubrects = HasSupportedNrSubrects(parameters, beforeUpscale);
 
     DlssNrFrameInfo frame {};
     frame.BeforeUpscale = beforeUpscale;
+    frame.PrivateColorCopy = beforeUpscale;
+    frame.IndependentCommands = interop;
+    frame.RayReconstruction = rayReconstruction;
+    frame.SubmissionEpoch = submissionEpoch;
+    frame.OutputArrivalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     frame.DepthInverted = (featureFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
+    frame.MotionVectorsLowResolution = (featureFlags & NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) != 0;
     frame.ColourIsLinearHdr = (featureFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0;
+    auto* finalOutput = NrResource(parameters, NVSDK_NGX_Parameter_Output, "DLSSD.Output");
+    auto* colourAuthority = finalOutput != nullptr ? finalOutput : color;
+    if (colourAuthority != nullptr)
+    {
+        switch (colourAuthority->GetDesc().Format)
+        {
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+        case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+        case DXGI_FORMAT_R32G32B32_FLOAT:
+        case DXGI_FORMAT_R11G11B10_FLOAT:
+            break;
+        default:
+            frame.ColourIsLinearHdr = false;
+        }
+    }
+    if (finalOutput != nullptr)
+    {
+        frame.OutputWidth = static_cast<unsigned int>(finalOutput->GetDesc().Width);
+        frame.OutputHeight = finalOutput->GetDesc().Height;
+    }
+    unsigned int outputWidth = 0, outputHeight = 0;
+    parameters->Get(NVSDK_NGX_Parameter_OutWidth, &outputWidth);
+    parameters->Get(NVSDK_NGX_Parameter_OutHeight, &outputHeight);
+    if (outputWidth != 0 && outputHeight != 0)
+    {
+        frame.OutputWidth = outputWidth;
+        frame.OutputHeight = outputHeight;
+    }
     unsigned int reset = 0;
     parameters->Get(NVSDK_NGX_Parameter_Reset, &reset);
     frame.Reset = reset != 0;
@@ -93,17 +148,12 @@ ShaderPass_Dx12 MakeDlssNrPass(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12
     if (frame.PreExposure <= 1e-6f)
         frame.PreExposure = 1.0f;
     frame.ExposureTexture = exposure;
-    if (parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &frame.GuideWidth) !=
-        NVSDK_NGX_Result_Success)
-        parameters->Get(NVSDK_NGX_Parameter_Width, &frame.GuideWidth);
-    if (parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &frame.GuideHeight) !=
-        NVSDK_NGX_Result_Success)
-        parameters->Get(NVSDK_NGX_Parameter_Height, &frame.GuideHeight);
-    if (beforeUpscale)
-    {
-        frame.Width = frame.GuideWidth;
-        frame.Height = frame.GuideHeight;
-    }
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &frame.RenderSubrectWidth);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, &frame.RenderSubrectHeight);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, &frame.DepthSubrectBaseX);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, &frame.DepthSubrectBaseY);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, &frame.MotionSubrectBaseX);
+    parameters->Get(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, &frame.MotionSubrectBaseY);
 
     return {
         [=, &shader](ID3D12Resource* nextOutput) -> ID3D12Resource*
@@ -173,10 +223,11 @@ ShaderPass_Dx12 MakeDlssNrPass(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12
 
 ID3D12Resource* PrepareDlssNrInput(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12GraphicsCommandList* commandList,
                                    NVSDK_NGX_Parameter* parameters, unsigned int featureFlags,
-                                   ID3D12CommandQueue* timingQueue, bool interop)
+                                   ID3D12CommandQueue* timingQueue, bool interop, bool rayReconstruction,
+                                   uint64_t submissionEpoch)
 {
     auto* color = NrResource(parameters, NVSDK_NGX_Parameter_Color, "DLSSD.Color");
-    if (color == nullptr || !shader.IsInit() || !HasSupportedNrSubrects(parameters) ||
+    if (color == nullptr || !shader.IsInit() || !CanRunNrBeforeUpscale(parameters) ||
         !Config::Instance()->DlssNrEnabled.value_or_default())
         return nullptr;
     const auto desc = color->GetDesc();
@@ -186,8 +237,8 @@ ID3D12Resource* PrepareDlssNrInput(DlssNr_Dx12& shader, ID3D12Device* device, ID
         return nullptr;
 
     ShaderPipeline_Dx12 pipeline;
-    pipeline.push_back(
-        MakeDlssNrPass(shader, device, commandList, parameters, true, featureFlags, timingQueue, interop));
+    pipeline.push_back(MakeDlssNrPass(shader, device, commandList, parameters, true, featureFlags, timingQueue, interop,
+                                      rayReconstruction, submissionEpoch));
     SetupShaderPipeline(pipeline, shader.Buffer());
     if (pipeline.front().inputBuffer != nullptr && DispatchShaderPipeline(pipeline))
         return shader.Buffer();
@@ -234,9 +285,11 @@ bool IFeature_Dx12::Init(ID3D12Device* InDevice, ID3D12GraphicsCommandList* InCo
 }
 
 bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters,
-                             ID3D12CommandQueue* timingQueue)
+                             ID3D12CommandQueue* timingQueue, uint64_t submissionEpoch, bool sourceRayReconstruction)
 {
     const bool interop = timingQueue != nullptr;
+    if (!interop)
+        submissionEpoch = State::Instance().frameCount;
     if (timingQueue == nullptr)
         timingQueue = State::Instance().currentCommandQueue;
     if (!IsInited())
@@ -286,9 +339,12 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
 
     RestoreUpscalerResources_Dx12 restoreResources(InParameters);
 
-    // Ray reconstruction consumes noisy lighting inputs; its reconstructed result is the NR input.
-    const bool nrBeforeUpscale =
-        Config::Instance()->DlssNrBeforeUpscale.value_or_default() && upscaler != Upscaler::DLSSD;
+    const bool rayReconstruction = sourceRayReconstruction || upscaler == Upscaler::DLSSD;
+    // Specialized schedules own the two seams but keep the same per-feature shader/history lifetime.
+    const bool specializedNr = NeuralRendering->ProcessSeam(
+        InCommandList, InParameters, true, timingQueue, rayReconstruction, submissionEpoch, interop, GetFeatureFlags());
+    const bool nrBeforeUpscale = !specializedNr && Config::Instance()->DlssNrRunBeforeSr.value_or_default() &&
+                                 CanRunNrBeforeUpscale(InParameters);
 
     // Order is important as that's the order of shader dispatch
     ShaderPipeline_Dx12 pipeline;
@@ -391,10 +447,10 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
               } });
     }
 
-    if (!nrBeforeUpscale && Config::Instance()->DlssNrEnabled.value_or_default())
+    if (!specializedNr && !nrBeforeUpscale && Config::Instance()->DlssNrEnabled.value_or_default())
     {
         pipeline.push_back(MakeDlssNrPass(*NeuralRendering, Device, InCommandList, InParameters, false,
-                                          GetFeatureFlags(), timingQueue, interop));
+                                          GetFeatureFlags(), timingQueue, interop, rayReconstruction, submissionEpoch));
     }
 
     if (Magnifier->ShouldRun())
@@ -424,15 +480,27 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
               } });
     }
 
+    // Post-seam scheduling sees the same final output identity as the pre-seam, after all ordinary passes.
+    pipeline.push_back({ [](ID3D12Resource* output) { return output; },
+                         [&](ID3D12Resource*, ID3D12Resource* output)
+                         {
+                             auto* previousOutput = GetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Output);
+                             InParameters->Set(NVSDK_NGX_Parameter_Output, output);
+                             NeuralRendering->ProcessSeam(InCommandList, InParameters, false, timingQueue,
+                                                          rayReconstruction, submissionEpoch, interop,
+                                                          GetFeatureFlags());
+                             InParameters->Set(NVSDK_NGX_Parameter_Output, previousOutput);
+                             return true;
+                         } });
+
     // Upscaler will write to the first active shader, or just output
     auto* currentTarget = SetupShaderPipeline(pipeline, paramOutput);
     InParameters->Set(NVSDK_NGX_Parameter_Output, currentTarget);
-
     auto* originalColor = GetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Color);
     if (nrBeforeUpscale)
     {
         if (auto* nrInput = PrepareDlssNrInput(*NeuralRendering, Device, InCommandList, InParameters, GetFeatureFlags(),
-                                               timingQueue, interop))
+                                               timingQueue, interop, rayReconstruction, submissionEpoch))
             InParameters->Set(NVSDK_NGX_Parameter_Color, nrInput);
     }
     UpscalerTime->Start(InCommandList);
@@ -505,6 +573,7 @@ IFeature_Dx12::IFeature_Dx12(unsigned int InHandleId, NVSDK_NGX_Parameter* InPar
 
 IFeature_Dx12::~IFeature_Dx12()
 {
+    DlssNr::ExposureScan::ReleaseTrackedResources();
     if (State::Instance().isShuttingDown)
         return;
 

@@ -2,6 +2,7 @@
 #include "LibraryLoad_Hooks.h"
 
 #include <Config.h>
+#include <framegen/dlssg/MfgUnlock.h>
 #include <DllNames.h>
 
 #include <proxies/Ntdll_Proxy.h>
@@ -55,6 +56,16 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
     auto normalizedPath = path.wstring();
     to_lower_in_place(normalizedPath);
 
+    if (State::Instance().externalFrameGeneration)
+    {
+        const auto filename = std::filesystem::path(normalizedPath).filename().wstring();
+        const bool streamline = filename.starts_with(L"sl.") && filename.ends_with(L".dll");
+        const bool otaFg = normalizedPath.contains(L"\\versions\\") &&
+            (normalizedPath.contains(L"\\sl_") || normalizedPath.contains(L"\\dlssg\\"));
+        if (streamline || otaFg || filename == L"nvngx_dlssg.dll")
+            return nullptr; // not handled: preserve the original loader/unlocker's path
+    }
+
     std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
     localSlPath = localSlPath / L"streamline"; // Hardcoded streamline folder
     auto normalizedLocalSlPath = localSlPath.lexically_normal();
@@ -105,6 +116,15 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
             return nvngxDlss;
         else
             LOG_ERROR("Trying to load dll: {}", libNameA);
+    }
+
+    // Optional Ada unlock before NGX caches capabilities. External FG already returned above.
+    if (std::filesystem::path(normalizedPath).filename() == L"nvngx_dlssg.dll" && MfgUnlock::Pending())
+    {
+        auto snippet = NtdllProxy::LoadLibraryExW_Ldr(lpLibFullPath, NULL, 0);
+        if (snippet)
+            MfgUnlock::TryApply(snippet);
+        return snippet;
     }
 
     // NGX OTA

@@ -101,20 +101,18 @@ bool IFeature_Vk::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InP
     ShaderPipeline_Vk pipeline;
     const bool useNr = NeuralRendering && NeuralRendering->CanRender() && !IsWithDx12() &&
                        Config::Instance()->DlssNrEnabled.value_or_default() &&
-                       DlssNr::HasSupportedSubrects(InParameters);
+                       DlssNr::HasSupportedSubrects(InParameters, false);
     const bool nrBeforeUpscale =
-        useNr && upscaler != Upscaler::DLSSD && Config::Instance()->DlssNrBeforeUpscale.value_or_default();
+        useNr && Config::Instance()->DlssNrRunBeforeSr.value_or_default() &&
+        DlssNr::HasSupportedSubrects(InParameters, true);
     const auto nrDepth = DlssNr::ImageInfo(paramDepth);
     const auto nrMotion = DlssNr::ImageInfo(paramMotion);
     auto nrFrame = DlssNr::FrameInfo(InParameters, nrBeforeUpscale);
     nrFrame.DepthInverted = DepthInverted();
     nrFrame.ColourIsLinearHdr = IsHdr();
-    if (!nrFrame.GuideWidth)
-        nrFrame.GuideWidth = RenderWidth();
-    if (!nrFrame.GuideHeight)
-        nrFrame.GuideHeight = RenderHeight();
-    nrFrame.Width = nrBeforeUpscale ? nrFrame.GuideWidth : TargetWidth();
-    nrFrame.Height = nrBeforeUpscale ? nrFrame.GuideHeight : TargetHeight();
+    nrFrame.RayReconstruction = upscaler == Upscaler::DLSSD;
+    nrFrame.MotionVectorsLowResolution = LowResMV();
+    // Keep the current per-evaluate subrect. The feature's cached render size may be last frame's.
 
     if (useNr && !nrBeforeUpscale)
         pipeline.push_back(DlssNr::MakePass(*NeuralRendering, InCmdBuffer, Instance, nrDepth, nrMotion, nrFrame));
@@ -186,7 +184,7 @@ bool IFeature_Vk::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InP
               // Dispatch
               [&](const VkImageInfo& input, const VkImageInfo& output) -> bool
               {
-                  if (!RCAS->CanRender() || !paramMotion || !paramOutput)
+                  if (!RCAS->CanRender() || !paramMotion || !paramDepth || !paramOutput)
                       return true;
 
                   RCAS->SetImageLayout(InCmdBuffer, input.Image, VK_IMAGE_LAYOUT_GENERAL,
