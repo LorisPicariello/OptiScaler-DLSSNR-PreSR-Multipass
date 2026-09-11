@@ -3,7 +3,6 @@
 
 #include "DlssNr.h"
 #include "DlssNr_ExposureScan.h"
-#include "DlssNrNative.h"
 
 
 #include <Config.h>
@@ -184,28 +183,6 @@ void RenderMenu(Config* config, float menuResScale)
 
         }
         bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
-        int precisionChoice = config->DlssNrPrecision.value_or_default() == 4 ? 1 : 0;
-        const char* precisions[] = { "NVIDIA (FP8)", "Experimental (FP8+NVFP4 hybrid)" };
-        if (ImGui::Combo("Model precision", &precisionChoice, precisions, IM_ARRAYSIZE(precisions)))
-            config->DlssNrPrecision = precisionChoice == 1 ? 4u : 0u;
-        HelpMarker("NVIDIA: original FP8 model (default), with some sensitive operations kept at higher precision.\nExperimental: this fork's FP8+NVFP4 hybrid for RTX 50 GPUs; output may differ slightly.");
-        if (precisionChoice > 0)
-        {
-            ImGui::TextUnformatted(enabled && DlssNrNative::IsActive() ? "Hybrid: active" : "Hybrid: inactive");
-            ImGui::TextWrapped("Loading may pause the game and look like a freeze. Please wait.");
-        }
-        // Keep failure details in the log without displaying changing kernel counters in the menu.
-        auto hybridStatus = DlssNrNative::Status();
-        hybridStatus = hybridStatus.substr(0, hybridStatus.find(" |"));
-        static std::string lastHybridWarning;
-        if (hybridStatus.rfind("Restart required:", 0) == 0 || hybridStatus.find("fallback") != std::string::npos)
-        {
-            if (hybridStatus != lastHybridWarning)
-                LOG_WARN("Hybrid: {}", hybridStatus);
-            lastHybridWarning = hybridStatus;
-        }
-        else
-            lastHybridWarning.clear();
         if (!finishedPicture)
         {
             if (ImGui::Checkbox("Generate before SR, apply after SR (DLSS)", &deferredDlss))

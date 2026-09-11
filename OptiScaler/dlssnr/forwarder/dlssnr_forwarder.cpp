@@ -86,11 +86,8 @@ std::map<std::wstring, Snippet> g_snippets;
 std::unordered_map<void*, Snippet*> g_featureOwners;
 thread_local std::string g_modelError;
 
-void recordModelError(Snippet* snippet, const char* fallback) {
-    auto message = snippet && snippet->module
-        ? (const char*(*)())GetProcAddress(snippet->module, "NVFP4_GetLastError") : nullptr;
-    const char* detail = message ? message() : nullptr;
-    g_modelError = detail && *detail ? detail : fallback;
+void recordModelError(const char* message) {
+    g_modelError = message;
 }
 
 Snippet* loadSnippet(const wchar_t *path) {
@@ -774,7 +771,7 @@ __declspec(dllexport) void *dlssnr_call_create(const wchar_t *snippetPath, const
     g_modelError.clear();
     auto* snippet = loadSnippet(snippetPath);
     if (!snippet || !capabilityParams) {
-        recordModelError(snippet, "model DLL or capability parameters unavailable");
+        recordModelError("model DLL or capability parameters unavailable");
         return nullptr;
     }
     if (!snippet->initialisedDevices.count(device) && snippet->init) {
@@ -783,7 +780,7 @@ __declspec(dllexport) void *dlssnr_call_create(const wchar_t *snippetPath, const
         // this announced itself to the driver as Cyberpunk 2077.
         dlssnr_call_last_init = snippet->init(0x24480451ull, dataPath, device, 0x0000015, capabilityParams);
         if (dlssnr_call_last_init != 1) {
-            recordModelError(snippet, "model initialization failed");
+            recordModelError("model initialization failed");
             return nullptr;
         }
         snippet->initialisedDevices.insert(device);
@@ -811,7 +808,7 @@ __declspec(dllexport) void *dlssnr_call_create(const wchar_t *snippetPath, const
     void *handle = nullptr;
     dlssnr_call_last_create = snippet->create(cmd, 18, capabilityParams, &handle);
     if (dlssnr_call_last_create == 1 && handle) g_featureOwners[handle] = snippet;
-    else recordModelError(snippet, "model feature creation failed");
+    else recordModelError("model feature creation failed");
     // Match the DX11/Vulkan paths: a partial handle on failure is not usable.
     return dlssnr_call_last_create == 1 ? handle : nullptr;
 }
@@ -885,7 +882,7 @@ __declspec(dllexport) int dlssnr_call_evaluate_v2(ID3D12GraphicsCommandList *cmd
     // caller to whoever called us and rejects it. Keeping the value in a volatile forces a real call and
     // a return through this module, which is the whole reason this file exists.
     volatile int result = owner->second->evaluate(cmd, feature, capabilityParams, nullptr);
-    if (result != 1) recordModelError(owner->second, "model evaluation failed");
+    if (result != 1) recordModelError("model evaluation failed");
     return result;
 }
 

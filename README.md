@@ -34,7 +34,6 @@ See the [setup guide](INSTALL-DLSSNR.md) for game-specific steps and troubleshoo
 ## Keep in mind
 
 - Neural Rendering costs performance and can cause flicker or other visual problems. Using it before Ray Reconstruction is still experimental.
-- The optional **hybrid mode** is for RTX 50 GPUs. Its files are included. Loading may pause the game and look like a freeze; please wait.
 - Avoid anti-cheat-protected multiplayer games.
 
 For frame generation, see the [setup notes](docs/DLSS-FRAME-GENERATION.md). For bugs, [open an issue](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/issues) with your game, GPU, settings and `OptiScaler.log`.

@@ -1,5 +1,7 @@
 # BG3 two-minute model comparison — 2026-09-09
 
+Historical benchmark: the NVFP4 backend and model selector tested here have since been removed.
+
 Each model was captured for 120 seconds. The first 20 seconds were discarded, leaving approximately 100 seconds per model. Capture order: candidate, FP8, existing hybrid.
 
 | Model | Rendered average FPS | Rendered 1% low FPS | FG output average FPS |

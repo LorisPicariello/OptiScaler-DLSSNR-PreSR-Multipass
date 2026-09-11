@@ -178,7 +178,7 @@ Turn on **Apply NR to the finished picture** in the Neural Rendering menu to app
 
 This option currently supports native DirectX 12 games using supported SDR, HDR10 or scRGB screen formats. HDR is detected automatically; no extra HDR setting is needed. It can also change the HUD and menus. Test the look and performance in your game.
 
-With this option on, **Run the model before Super Resolution** chooses whether NR generates its changes before upscaling or directly on the finished picture. The older residual placement controls are hidden. Model strength, colour, precision and resolution still work. If the game does not provide usable picture/depth/movement data, NR skips that picture; the status line explains known unsupported cases. It does not fall back to the earlier hook, which could bring the green noise back.
+With this option on, **Run the model before Super Resolution** chooses whether NR generates its changes before upscaling or directly on the finished picture. The older residual placement controls are hidden. Model strength, colour and resolution still work. If the game does not provide usable picture/depth/movement data, NR skips that picture; the status line explains known unsupported cases. It does not fall back to the earlier hook, which could bring the green noise back.
 
 The INI setting is `[DlssNr] FinishedPicture=true`. Turn it off to return to your previous placement settings. Native Vulkan and the DirectX 11/Vulkan bridges are not supported by this option.
 

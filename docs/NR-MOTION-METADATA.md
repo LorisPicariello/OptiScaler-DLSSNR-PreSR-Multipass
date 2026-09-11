@@ -11,7 +11,7 @@ against its own allocation. Empty regions skip NR. Missing dimensions fall back 
 resource's available region rather than borrowing depth dimensions for motion vectors.
 
 DX12 applies the working-resolution conversion independently on X and Y; native Vulkan
-already did so and retains it. Model precision, pre-SR placement, per-pass histories,
+already did so and retains it. Pre-SR placement, per-pass histories,
 colour composition, RR placement and frame-generation ownership are preserved. Each NR pass
 receives the same guide metadata. The DX11/Vulkan-to-DX12 bridges retain their parameter blocks
 while substituting shared resources, so they reach the same DX12 handling.

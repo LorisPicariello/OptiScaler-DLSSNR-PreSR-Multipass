@@ -274,7 +274,6 @@ class Config
     // appear; 1.0 = no accumulation (each frame's raw residual, which flickers). Default 0.08.
     CustomOptional<float> DlssNrResidualAcrossRrBlend { 0.08f };
     CustomOptional<bool> DlssNrResidualFg { false };
-    CustomOptional<uint32_t> DlssNrPrecision { 0 }; // 0 NVIDIA FP8 (default), 4 Experimental NVFP4 hybrid
     CustomOptional<bool> DlssNrResidualFgApproxCamera { false };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.

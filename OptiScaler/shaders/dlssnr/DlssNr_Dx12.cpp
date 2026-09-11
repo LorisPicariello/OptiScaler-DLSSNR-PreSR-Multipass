@@ -6,7 +6,6 @@
 #include <resource_tracking/ResTrack_Dx12.h>
 
 #include <dlssnr/DlssNr.h>
-#include <dlssnr/DlssNrNative.h>
 #include <dlssnr/ResidualFg.h>
 #include <DirectXMath.h>
 
@@ -523,13 +522,11 @@ struct DlssNr_Dx12::State
 
     std::filesystem::path dllDir;
 
-    const char* SelectedModelFile() { return "nvngx_dlssnr.dll"; }
-
-    std::optional<std::filesystem::path> FindSelectedModel()
+    std::optional<std::filesystem::path> FindNvidiaModel()
     {
-        auto path = Util::FindFilePath(dllDir, SelectedModelFile());
+        auto path = Util::FindFilePath(dllDir, "nvngx_dlssnr.dll");
         if (!path.has_value())
-            path = Util::FindFilePath(Util::ExePath().remove_filename(), SelectedModelFile());
+            path = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssnr.dll");
         return path;
     }
 
@@ -2901,7 +2898,6 @@ struct DlssNr_Dx12::State
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             Barrier(cmd, slot.motion.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            DlssNrNative::SetPrecision(Config::Instance()->DlssNrPrecision.value_or_default());
             ID3D12Resource* nrColor = color.Get();
             bool colorReady = true;
             DlssNrConstants conversion {};
@@ -3343,7 +3339,7 @@ struct DlssNr_Dx12::State
         if (!proxyBackend && nr.feature == nullptr && nr.output != nullptr && nr.colorCopy != nullptr &&
             nr.hdrCopy != nullptr)
         {
-            auto snippet = FindSelectedModel();
+            auto snippet = FindNvidiaModel();
 
             if (!snippet.has_value())
             {
@@ -3475,13 +3471,13 @@ struct DlssNr_Dx12::State
                 if (nr.passCreateFailed[pass])
                     break;
 
-                auto snippet = FindSelectedModel();
+                auto snippet = FindNvidiaModel();
 
                 if (!snippet.has_value())
                 {
                     nr.passCreateFailed[pass] = true;
                     LOG_ERROR("DLSS-NR: pass {} feature not built because {} disappeared", pass + 1,
-                              SelectedModelFile());
+                              "nvngx_dlssnr.dll");
                 }
                 else
                 {
@@ -4416,14 +4412,6 @@ struct DlssNr_Dx12::State
         std::lock_guard<std::recursive_mutex> nrLock(mutex);
         const Config& cfg = *Config::Instance();
 
-        const unsigned precision = cfg.DlssNrPrecision.value_or_default();
-        if (lastPrecision != precision)
-        {
-            RetryAfterFailure();
-            deferredSr.Cancel();
-            lastPrecision = precision;
-        }
-        DlssNrNative::SetPrecision(precision);
         const unsigned finishedMode =
             !cfg.DlssNrFinishedPicture.value_or_default()                                             ? 0u
             : (cfg.DlssNrRunBeforeSr.value_or_default() || cfg.DlssNrDeferredDlss.value_or_default()) ? 2u
@@ -5214,7 +5202,6 @@ struct DlssNr_Dx12::State
     unsigned int lastSuper = 0;
     bool tuningReported = false;
     unsigned long long lastSplitLog = 0;
-    unsigned lastPrecision = 0;
     unsigned lastFinishedMode = 0;
     bool reportedPadding = false;
     bool warnedSubrect = false;
@@ -5585,13 +5572,6 @@ bool DlssNr_Dx12::ProcessSeam(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Paramete
         _state->nr.residualPair.Cancel();
         _state->nr.residualStoreValid = false;
         _state->nr.residualHistoryPrimed = false;
-        const auto precision = cfg.DlssNrPrecision.value_or_default();
-        if (_state->lastPrecision != precision)
-        {
-            _state->RetryAfterFailure();
-            _state->lastPrecision = precision;
-        }
-        DlssNrNative::SetPrecision(precision);
     }
     _state->Publish();
     return special;

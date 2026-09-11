@@ -1,3 +1,8 @@
+# Archived hybrid packaging
+
+These notes describe earlier releases. The NVFP4 backend, model selector, asset downloader and hybrid
+packaging option have been removed; the commands below do not apply to current builds.
+
 The hybrid status shows whether replacement kernels are active. Loading can pause the game and look like a freeze; please wait. Release packages include the precompiled hybrid assets, so users do not need CUDA or a kernel build.
 
 For local packaging, run `./get_hybrid_assets.ps1 -Destination <new-directory>`, then pass that directory to `package_release.ps1 -HybridAssetsDirectory <directory>`. The release workflow does this automatically and verifies the source archive's SHA-256. The helper accepts `-Archive <zip>` to use a previously downloaded copy of the same pinned release. Missing or modified archives fail packaging instead of silently dropping the kernels.

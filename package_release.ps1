@@ -16,7 +16,6 @@ param(
     [switch]$AcceptNvidiaLicenses,
     [switch]$IncludeAmpereMfg,
     [switch]$AcceptAmpereMfgLicenses,
-    [string]$HybridAssetsDirectory,
     [string]$StreamlineArchive
 )
 
@@ -134,7 +133,16 @@ foreach ($d in @("Licenses", "OptiScaler")) {
     if (-not (Test-Path -LiteralPath $source -PathType Container)) {
         throw "Required dependency directory is missing: $source"
     }
-    Copy-Item -LiteralPath $source -Destination "$stage\$d" -Recurse -Force
+    if ($d -eq 'OptiScaler') {
+        # Older build directories may retain the removed backend's payloads.
+        $destination = Join-Path $stage $d
+        New-Item -ItemType Directory -Force -Path $destination | Out-Null
+        Get-ChildItem -LiteralPath $source -Force | Where-Object { $_.Name -ine 'nvfp4' } |
+            ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force }
+    }
+    else {
+        Copy-Item -LiteralPath $source -Destination "$stage\$d" -Recurse -Force
+    }
 }
 
 Copy-Item $forwarder "$stage\nvngx.dll_dlssnr.dll" -Force
@@ -223,19 +231,6 @@ foreach ($requiredTextFile in @("$stage\INSTALL-DLSSNR.md", "$stage\setup_window
     }
 }
 Write-Host "cross-generation guidance: present and hash-pinned"
-
-if ($HybridAssetsDirectory) {
-    $manifest = Get-Content -LiteralPath (Join-Path $HybridAssetsDirectory 'asset-manifest.json') -Raw | ConvertFrom-Json
-    foreach ($item in $manifest.files) {
-        $assetRoot = [IO.Path]::GetFullPath((Join-Path $HybridAssetsDirectory 'OptiScaler/nvfp4/hybrid'))
-        $source = [IO.Path]::GetFullPath((Join-Path $assetRoot $item.path))
-        if (-not $source.StartsWith($assetRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid hybrid asset path' }
-        if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $item.sha256) { throw "Hybrid asset hash mismatch: $source" }
-        $target = Join-Path "$stage/OptiScaler/nvfp4/hybrid" $item.path
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
-        Copy-Item -LiteralPath $source -Destination $target
-    }
-}
 
 if ($IncludeAmpereMfg) {
     $sm86Src = "$root\dlssg_for_sm86"

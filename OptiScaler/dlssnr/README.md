@@ -10,9 +10,8 @@ NVIDIA; the model ships in driver packages and is not redistributed here.
 The shaders implement `Shader_Dx12` / `Shader_Vk` and receive explicit colour, depth, motion, output
 and frame metadata. Shared composition constants live in `DlssNr_Common.h`. The ordinary model,
 scratch buffers, history, capture and timing are associated with that shader instance. D3D12's
-finished-picture and deferred schedules also belong to the instance. This is not a claim that every
-GPU allocation is per-feature: `DlssNrNative` retains a device-service cache for the experimental
-NVFP4 hybrid runtime, and the forwarder caches API initialization and function tables.
+finished-picture and deferred schedules also belong to the instance. The forwarder separately
+caches API initialization and function tables at module scope.
 
 Both APIs use the same `SetupShaderPipeline` / `DispatchShaderPipeline` pattern before and after the
 upscaler. D3D11-to-D3D12 and Vulkan-to-D3D12 bridges inherit the D3D12 implementation. Native D3D11
@@ -95,8 +94,8 @@ test. These checks do not validate a real driver's NR output or every game's res
 Ordinary D3D12 feature/texture retirement retains the existing 32-evaluate delay; that is not a GPU
 fence guarantee. Deferred/late generations have their own completion and retirement rules. Vulkan
 waits for the device before replacing model resources. The forwarder's module-level runtime cache
-and the native hybrid device-service cache remain separate lifetime concerns; per-feature shader
-ownership does not establish unrestricted multi-device support for those services.
+remains a separate lifetime concern; per-feature shader ownership does not establish unrestricted
+multi-device support for that service.
 
 The exposure scanner accepts one device until a GPU-safe shutdown and rejects foreign-device
 resources. Finished-picture teardown retains main's five-second wait; a timeout is not proof that
@@ -136,7 +135,7 @@ Scaling chain, so the bug stayed invisible until something else called it.
 ## Files
 
 The pass itself lives under `shaders/dlssnr/`, dispatched like every other shader here. What stays in
-`dlssnr/` contains the menu, status, capture, model backends, exposure scan, native hybrid service,
+`dlssnr/` contains the menu, status, capture, model backends, exposure scan,
 forwarder and proxy route.
 
 | File | Role |
@@ -148,7 +147,6 @@ forwarder and proxy route.
 | `DlssNr_Capture.h` | matched before/after frame dumps |
 | `PassProfiles.h` | shared per-pass model profiles and tuning inheritance |
 | `DlssNr_ExposureScan.h/.cpp` | observed exposure candidates and calibration controls |
-| `DlssNrNative.h/.cpp`, `DlssNrHybridAssets.h`, `DlssNrHybridBuilder.h` | experimental NVFP4 hybrid integration and device-service resources |
 | `DlssNr_Proxy.h/.cpp` | the experiment in reaching the model through the driver core instead of the forwarder; see `FORWARDER_INVESTIGATION.md` |
 | `forwarder/` | the caller-gate shim, built by `dlssnr_forwarder.vcxproj` into the release layout |
 | `shaders/dlssnr/DlssNr_Dx12.h/.cpp` | the pass: forwarder loading, feature lifetime, the evaluate path, encode/resolve orchestration, capture |
