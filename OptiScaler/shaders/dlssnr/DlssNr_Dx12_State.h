@@ -14,6 +14,7 @@
 #include <dlssnr/DlssNr.h>
 
 #include <dlssnr/DlssNr_Capture.h>
+#include <dlssnr/DlssNr_PipelineCapture.h>
 #include <dlssnr/DlssNr_Proxy.h>
 #include <dlssnr/DlssNr_GpuLifetime.h>
 #include <dlssnr/DlssNr_ExposureScan.h>
@@ -70,6 +71,9 @@ struct DlssNr_Dx12::State
 
     // Writes matched before/after frames on request, so comparisons stop depending on video.
     capture::FrameCapture captureFrames;
+    DlssNr::PipelineCaptureFrame* pipelineCapture = nullptr; // Owned by lifetime retirement after End.
+    std::filesystem::path pipelineCaptureDirectory;
+    unsigned pipelineCaptureRemaining = 0;
 
     // One capture happens on its own each session, so there is always a fresh sample without anyone having
     // to remember to ask. Started after the scene has had a moment to settle: the first frames after a
