@@ -425,6 +425,8 @@ bool ModelVk::Impl::Evaluate(VkCommandBuffer cmdBuffer, const VkImageInfo& colou
     mvY *= (float) workHeight / height;
     OwnedImage* answer = &state.output;
     OwnedImage* input = modelInput;
+    bool clampFailed = false;
+    uint32_t clampSlots[2] = { UINT32_MAX, UINT32_MAX };
     NVSDK_NGX_Result evaluated = NVSDK_NGX_Result_Success;
     for (unsigned int pass = 0; pass < passes; ++pass)
     {
@@ -436,12 +438,26 @@ bool ModelVk::Impl::Evaluate(VkCommandBuffer cmdBuffer, const VkImageInfo& colou
             break;
         if (pass + 1 < passes)
         {
-            input = answer;
+            Transition(cmdBuffer, *answer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            Transition(cmdBuffer, state.passClamp, VK_IMAGE_LAYOUT_GENERAL);
+            DlssNrConstants clamp {};
+            clamp.Mode = DlssNrMode_ClampProxy;
+            clamp.Width = workWidth;
+            clamp.Height = workHeight;
+            if (!state.pass->Dispatch(cmdBuffer, clamp, workWidth, workHeight, answer->view, VK_NULL_HANDLE,
+                                      VK_NULL_HANDLE, VK_NULL_HANDLE, state.passClamp.view, VK_NULL_HANDLE,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false, &clampSlots[pass % 2]))
+            {
+                clampFailed = true;
+                break; // Resolve the last valid answer and reset skipped histories next frame.
+            }
+            input = &state.passClamp;
             answer = answer == &state.output ? &state.scratch : &state.output;
         }
     }
 
-    state.reset = false;
+    state.reset = clampFailed;
     state.frames++;
 
     if (evaluated != NVSDK_NGX_Result_Success)

@@ -26,15 +26,9 @@
 #include <shaders/Shader_Dx12.h>
 #include <shaders/Shader_Dx12Utils.h>
 
-// Three dispatches are recorded per frame and several frames can be in flight at once, more so with
-// frame generation. Each dispatch needs descriptors and constants the GPU is not still reading, so
-// there has to be enough for three passes times the deepest pipeline we might sit behind.
-// Descriptor and constant slots, consumed one per dispatch and reused round-robin with no fence.
-//
-// The shader still records at most meter + encode + downsample + resolve per frame. Extra model layers
-// are NGX evaluates and do not consume this ring; their A/B resources and feature histories are
-// persistent. Forty-eight slots leave twelve fully populated frames before descriptor/constant reuse.
-#define DLSSNR_NUM_OF_HEAPS 48
+// Keep the existing twelve-frame descriptor budget, including two immutable clamp bindings.
+// A model chain reuses those two bindings regardless of its pass count.
+#define DLSSNR_NUM_OF_HEAPS 72
 
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 {
@@ -114,7 +108,9 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
                       // Vestigial. Fed to the slot the removed edit accumulator read its history from;
                       // nothing reads it now and every caller passes nullptr. Kept only so the binding
                       // table keeps its shape -- not evidence that temporal accumulation exists.
-                      ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget, ID3D12Resource* OutKeep);
+                      ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget, ID3D12Resource* OutKeep,
+                      // Initialize to UINT32_MAX. Reuse only with identical bindings/constants in one chain.
+                      uint32_t* immutableSlot = nullptr);
 
     // One compute pass of the ResidualAcrossRR v2 shader (dlssnr_residual.hlsl). Same descriptor
     // table shape as DispatchPass; binds _residualPipelineState instead of _pipelineState. t4/u1

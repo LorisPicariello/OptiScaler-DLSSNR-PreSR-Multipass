@@ -50,6 +50,7 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
 
             ParkNrResource(nr.output);
             ParkNrResource(nr.passScratch);
+            ParkNrResource(nr.passClamp);
             ParkNrResource(nr.colorCopy);
             ParkNrResource(nr.hdrCopy);
             ParkNrResource(nr.colorSmall);
@@ -88,15 +89,22 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
         // Reclaim the extra raster and clear its failure latch. Raising the count later gets one fresh
         // allocation attempt; holding a failing allocation at two must not retry it every frame.
         ParkNrResource(nr.passScratch);
+        ParkNrResource(nr.passClamp);
         nr.passScratchFailed = false;
     }
     else if (nr.passScratch == nullptr && !nr.passScratchFailed)
     {
         nr.passScratch = CreateScratch(device, desc.Format, workWidth, workHeight);
-        nr.passScratchFailed = nr.passScratch == nullptr;
+        nr.passClamp = CreateScratch(device, desc.Format, workWidth, workHeight);
+        nr.passScratchFailed = nr.passScratch == nullptr || nr.passClamp == nullptr;
+        if (nr.passScratchFailed)
+        {
+            ParkNrResource(nr.passScratch);
+            ParkNrResource(nr.passClamp);
+        }
 
         if (nr.passScratchFailed)
-            LOG_ERROR("DLSS-NR: could not allocate the model-output ping-pong; extra passes are disabled");
+            LOG_ERROR("DLSS-NR: could not allocate the multipass textures; extra passes are disabled");
     }
 
     if (reduced && nr.colorSmall == nullptr)

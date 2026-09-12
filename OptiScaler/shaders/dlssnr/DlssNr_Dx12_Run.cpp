@@ -304,10 +304,15 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     ID3D12Resource* finalAnswer = nullptr;
     bool outputReadable = false;
     bool scratchReadable = false;
+    bool clampReadable = false;
+    bool clampFailed = false;
+    uint32_t clampSlots[2] = { UINT32_MAX, UINT32_MAX };
 
     const auto MakeModelReadable = [&](ID3D12Resource* resource)
     {
-        bool& readable = resource == nr.output ? outputReadable : scratchReadable;
+        bool& readable = resource == nr.output      ? outputReadable
+                         : resource == nr.passClamp ? clampReadable
+                                                    : scratchReadable;
         if (!readable)
         {
             Barrier(cmdList, resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
@@ -318,7 +323,9 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
 
     const auto MakeModelWritable = [&](ID3D12Resource* resource)
     {
-        bool& readable = resource == nr.output ? outputReadable : scratchReadable;
+        bool& readable = resource == nr.output      ? outputReadable
+                         : resource == nr.passClamp ? clampReadable
+                                                    : scratchReadable;
         if (readable)
         {
             Barrier(cmdList, resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -350,7 +357,21 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
 
         if (pass + 1 < effectivePasses)
         {
-            passInput = finalAnswer;
+            MakeModelWritable(nr.passClamp);
+            DlssNrConstants clamp {};
+            clamp.Mode = DlssNrMode_ClampProxy;
+            clamp.Width = workWidth;
+            clamp.Height = workHeight;
+            if (!shader.DispatchPass(cmdList, clamp, finalAnswer, nullptr, nullptr, nullptr, nullptr, nr.passClamp,
+                                     nullptr, &clampSlots[pass % 2]))
+            {
+                // Keep this frame's last valid answer; later histories skipped a frame.
+                clampFailed = true;
+                effectivePasses = pass + 1;
+                break;
+            }
+            MakeModelReadable(nr.passClamp);
+            passInput = nr.passClamp;
             passOutput = passOutput == nr.output ? nr.passScratch : nr.output;
         }
     }
@@ -358,7 +379,7 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     if (ngxTime != nullptr)
         ngxTime->End(cmdList);
 
-    nr.reset = finalAnswer == nullptr;
+    nr.reset = clampFailed || finalAnswer == nullptr;
 
     // Supersampling probe: report the model working ABOVE native so a test log tells us whether NGX even
     // accepts a super-native evaluate and what it returns. Once per working-size change, or on any error.
@@ -451,14 +472,16 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
                   NgxResultName((unsigned int) result));
     }
 
-    // On an evaluation failure, intermediate A/B inputs may still be readable. Restore both persistent
-    // ping-pong surfaces to the UAV state the next frame starts from.
+    // Restore all intermediate surfaces to the UAV state expected by the next frame.
     MakeModelWritable(nr.output);
     if (nr.passScratch != nullptr)
         MakeModelWritable(nr.passScratch);
 
     Barrier(cmdList, nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    if (nr.passClamp != nullptr)
+        MakeModelWritable(nr.passClamp);
 
     // Failed evaluations leave the game's original image intact. A successful copy-back writes
     // only the active rectangle and restores both resources before DLSS consumes the image.

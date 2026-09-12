@@ -56,6 +56,7 @@ struct VkState
     // What the model writes, the proxy it is shown, and the frame as the upscaler left it.
     OwnedImage output;
     OwnedImage scratch;
+    OwnedImage passClamp;
     OwnedImage proxy;
     OwnedImage keep;
     bool beforeSr = false;

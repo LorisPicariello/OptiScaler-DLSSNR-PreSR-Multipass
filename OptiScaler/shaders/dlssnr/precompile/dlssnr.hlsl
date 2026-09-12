@@ -525,6 +525,14 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         return;
     }
 
+    if (gMode == 8)
+    {
+        // Already encoded: restore the input range without applying the tone curve again.
+        float4 raw = gSource.Load(int3(id.xy, 0));
+        gTarget[id.xy] = float4(saturate(SanitizeFinite3(raw.rgb, 0.5)), raw.a);
+        return;
+    }
+
     // The meter. One thread per tile of a 64x64 grid over the frame, writing that tile's mean
     // luminance. The frame is raw linear here -- this runs before the encode, on purpose, because the
     // number being looked for is what the encode's divisor should be.

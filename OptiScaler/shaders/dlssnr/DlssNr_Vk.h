@@ -47,7 +47,7 @@ class DlssNr_Vk : public Shader_Vk
 {
     // Enough slots for several dispatches per frame across the frames that can be in flight. Encode
     // and resolve are two; the debug views and the exposure fetch are the others.
-    static constexpr uint32_t kSlotsPerFrame = 10;
+    static constexpr uint32_t kSlotsPerFrame = 12;
     static constexpr uint32_t kFramesInFlight = 4;
     static constexpr uint32_t kSlots = kSlotsPerFrame * kFramesInFlight;
 
@@ -105,5 +105,7 @@ class DlssNr_Vk : public Shader_Vk
                   uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
                   VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
                   VkImageLayout InSourceLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                  VkImageLayout InMotionLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, bool finishedColor = false);
+                  VkImageLayout InMotionLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, bool finishedColor = false,
+                  // Initialize to UINT32_MAX; identical bindings/constants within one model chain only.
+                  uint32_t* immutableSlot = nullptr);
 };

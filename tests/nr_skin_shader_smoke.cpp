@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <cstddef>
 #include "../OptiScaler/shaders/dlssnr/DlssNr_Common.h"
+#include "../OptiScaler/shaders/dlssnr/precompile/DlssNr_Shader.h"
 using Microsoft::WRL::ComPtr;
 struct Pixel { float r, g, b, a; };
 static void check(HRESULT hr) { if (FAILED(hr)) throw std::runtime_error("D3D call failed"); }
@@ -111,5 +112,21 @@ int wmain(int argc, wchar_t** argv) try {
     settings.Mode=DlssNrMode_UnitExposure; result=run();
     expect(result[0].r==1 && result[1].r==1, "Private DLSS exposure is not fixed at one");
     std::puts("PASS: signed residual, shadow/brightening roundtrip, neutral identity, alpha, overshoot, unit exposure");
+    // Intermediate NR answers must remain encoded, finite and bounded over a long chain.
+    settings.Mode=DlssNrMode_ClampProxy;
+    const std::array<Pixel,2> raw {{{-0.2f,1.2f,0.3f,0.25f}, {INFINITY,-INFINITY,NAN,0.75f}}};
+    const std::array<Pixel,2> bounded {{{0,1,0.3f,0.25f}, {0.5f,0.5f,0.5f,0.75f}}};
+    ComPtr<ID3D11ComputeShader> productionShader;
+    check(device->CreateComputeShader(DlssNr_cso,sizeof(DlssNr_cso),nullptr,&productionShader));
+    ctx->CSSetShader(productionShader.Get(),nullptr,0);
+    ctx->UpdateSubresource(original.Get(),0,nullptr,raw.data(),sizeof(raw),0);
+    for (int pass=0; pass<30; ++pass)
+    {
+        result=run();
+        expect(same(result[0],bounded[0]) && same(result[1],bounded[1]),
+               "Interpass clamp lost finite RGB, input range, identity or alpha");
+        ctx->UpdateSubresource(original.Get(),0,nullptr,result.data(),sizeof(result),0);
+    }
+    std::puts("PASS: 30 interpass clamps, finite RGB, bounded range, encoded identity and alpha");
     return 0;
 } catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }

@@ -136,43 +136,51 @@ DlssNr_Dx12::DlssNr_Dx12(std::string InName, ID3D12Device* InDevice)
 bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
                                ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
                                ID3D12Resource* InMotion, ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget,
-                               ID3D12Resource* OutKeep)
+                               ID3D12Resource* OutKeep, uint32_t* immutableSlot)
 {
     _state->lifetime.Record(InCmdList);
     if (!_init || InCmdList == nullptr || _device == nullptr || InSource == nullptr || OutTarget == nullptr)
         return false;
 
-    const uint32_t slot = _heapIndex;
-    _heapIndex = (_heapIndex + 1) % DLSSNR_NUM_OF_HEAPS;
+    const bool reuse = immutableSlot && *immutableSlot != UINT32_MAX;
+    const uint32_t slot = reuse ? *immutableSlot : _heapIndex;
+    if (!reuse)
+        _heapIndex = (_heapIndex + 1) % DLSSNR_NUM_OF_HEAPS;
 
     FrameDescriptorHeap& currentHeap = _frameHeaps[slot];
-
-    // Every slot in the table gets a view, whether the mode reads it or not. An unbound descriptor is
-    // not an empty read; it is a read from nothing, and the source stands in wherever a mode has
-    // nothing of its own to put there.
-    ID3D12Resource* const srvs[kSrvCount] = {
-        InSource,
-        InModel != nullptr ? InModel : InSource,
-        InOriginal != nullptr ? InOriginal : InSource,
-        InMotion != nullptr ? InMotion : InSource,
-        InPrevEdit != nullptr ? InPrevEdit : InSource,
-    };
-
-    for (uint32_t i = 0; i < kSrvCount; ++i)
-        CreateShaderResourceView(_device, srvs[i], currentHeap.GetSrvCPU(i));
-
-    ID3D12Resource* const uavs[kUavCount] = {
-        OutTarget,
-        OutKeep != nullptr ? OutKeep : OutTarget,
-    };
-
-    for (uint32_t i = 0; i < kUavCount; ++i)
-        CreateUnorderedAccessView(_device, uavs[i], currentHeap.GetUavCPU(i), 0);
-
-    if (!CreateConstantsBuffer(_device, _constantBuffers[slot], InConstants, currentHeap.GetCbvCPU(0)))
+    if (!reuse)
     {
-        LOG_ERROR("[{0}] Failed to create a constants buffer", _name);
-        return false;
+
+        // Every slot in the table gets a view, whether the mode reads it or not. An unbound descriptor is
+        // not an empty read; it is a read from nothing, and the source stands in wherever a mode has
+        // nothing of its own to put there.
+        ID3D12Resource* const srvs[kSrvCount] = {
+            InSource,
+            InModel != nullptr ? InModel : InSource,
+            InOriginal != nullptr ? InOriginal : InSource,
+            InMotion != nullptr ? InMotion : InSource,
+            InPrevEdit != nullptr ? InPrevEdit : InSource,
+        };
+
+        for (uint32_t i = 0; i < kSrvCount; ++i)
+            CreateShaderResourceView(_device, srvs[i], currentHeap.GetSrvCPU(i));
+
+        ID3D12Resource* const uavs[kUavCount] = {
+            OutTarget,
+            OutKeep != nullptr ? OutKeep : OutTarget,
+        };
+
+        for (uint32_t i = 0; i < kUavCount; ++i)
+            CreateUnorderedAccessView(_device, uavs[i], currentHeap.GetUavCPU(i), 0);
+
+        if (!CreateConstantsBuffer(_device, _constantBuffers[slot], InConstants, currentHeap.GetCbvCPU(0)))
+        {
+            LOG_ERROR("[{0}] Failed to create a constants buffer", _name);
+            return false;
+        }
+
+        if (immutableSlot)
+            *immutableSlot = slot;
     }
 
     ID3D12DescriptorHeap* heaps[] = { currentHeap.GetHeapCSU() };

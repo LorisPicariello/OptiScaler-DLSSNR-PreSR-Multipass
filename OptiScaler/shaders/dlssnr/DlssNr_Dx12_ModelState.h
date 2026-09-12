@@ -21,6 +21,7 @@ struct ModelStateDx12
     // output (A), pass 1 writes this (B), and pass 2 writes A again. Only the final answer is composed.
     ID3D12Resource* passScratch = nullptr;
     bool passScratchFailed = false;
+    ID3D12Resource* passClamp = nullptr; // bounded input for the next model pass
 
     // The frame as the upscaler wrote it. The resolve adds the model's edit to this rather than
     // reconstructing it by inverting the tone curve, which is what turned every light in the frame into

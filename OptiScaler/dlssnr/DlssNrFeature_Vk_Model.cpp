@@ -206,6 +206,7 @@ void ModelVk::Impl::Shutdown()
 
     DestroyImage(state.output);
     DestroyImage(state.scratch);
+    DestroyImage(state.passClamp);
     DestroyImage(state.proxy);
     DestroyImage(state.proxySmall);
     DestroyImage(state.outputNative);
@@ -309,6 +310,7 @@ bool ModelVk::Impl::PrepareModels(VkCommandBuffer cmdBuffer, const DlssNrFrameIn
 
         ReleaseModels();
         DestroyImage(state.scratch);
+        DestroyImage(state.passClamp);
 
         const VkFormat working = VK_FORMAT_R16G16B16A16_SFLOAT;
 
@@ -328,7 +330,8 @@ bool ModelVk::Impl::PrepareModels(VkCommandBuffer cmdBuffer, const DlssNrFrameIn
         // the source the downsample reads, keep is the untouched frame the resolve composites onto.
         // outputNative is the native buffer the supersample down-leg averages the answer into.
         const bool ok = CreateImage(state.output, workWidth, workHeight, working, true) &&
-                        (passes == 1 || CreateImage(state.scratch, workWidth, workHeight, working, true)) &&
+                        (passes == 1 || (CreateImage(state.scratch, workWidth, workHeight, working, true) &&
+                                         CreateImage(state.passClamp, workWidth, workHeight, working, true))) &&
                         CreateImage(state.proxy, width, height, working, true) &&
                         CreateImage(state.keep, width, height, working, true) &&
                         (!reduced || CreateImage(state.proxySmall, workWidth, workHeight, working, true)) &&

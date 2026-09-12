@@ -243,8 +243,8 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
 
 bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InConstants, uint32_t InThreadsX,
                          uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
-                         VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
-                         VkImageLayout InSourceLayout, VkImageLayout InMotionLayout, bool finishedColor)
+                         VkImageView InMotion, VkImageView InTarget, VkImageView InKeep, VkImageLayout InSourceLayout,
+                         VkImageLayout InMotionLayout, bool finishedColor, uint32_t* immutableSlot)
 {
     if (!CanRender() || InCmdList == VK_NULL_HANDLE || (finishedColor && !_finishedPipeline))
         return false;
@@ -258,14 +258,19 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
     if (!CreateDummy(InCmdList))
         return false;
 
-    const uint32_t slot = _slot;
-    _slot = (_slot + 1) % kSlots;
+    const bool reuse = immutableSlot && *immutableSlot != UINT32_MAX;
+    const uint32_t slot = reuse ? *immutableSlot : _slot;
+    if (!reuse)
+    {
+        _slot = (_slot + 1) % kSlots;
+        const VkDeviceSize offset = _slotStride * slot;
+        std::memcpy((char*) _mappedConstantBuffer + offset, &InConstants, sizeof(DlssNrConstants));
 
-    const VkDeviceSize offset = _slotStride * slot;
-    std::memcpy((char*) _mappedConstantBuffer + offset, &InConstants, sizeof(DlssNrConstants));
-
-    WriteDescriptors(_descriptorSets[slot], offset, InSource, InModel, InOriginal, InMotion, InTarget, InKeep,
-                     InSourceLayout, InMotionLayout);
+        WriteDescriptors(_descriptorSets[slot], offset, InSource, InModel, InOriginal, InMotion, InTarget, InKeep,
+                         InSourceLayout, InMotionLayout);
+        if (immutableSlot)
+            *immutableSlot = slot;
+    }
 
     vkCmdBindPipeline(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, finishedColor ? _finishedPipeline : _pipeline);
     vkCmdBindDescriptorSets(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, _pipelineLayout, 0, 1, &_descriptorSets[slot], 0,
