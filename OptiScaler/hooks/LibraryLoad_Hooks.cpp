@@ -44,9 +44,6 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckA(std::string libName, LPCSTR lpLibFul
 
 HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibFullPath)
 {
-    if (auto isolated = StreamlineHooks::LoadIsolatedGamePlugin(lpLibFullPath))
-        return isolated;
-
     auto libNameA = wstring_to_string(libName);
 
 #ifdef LOG_LIB_OPERATIONS
