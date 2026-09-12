@@ -67,7 +67,7 @@ void RenderStatus(Config* config, float menuResScale)
 
         if (reason[0] != 0)
         {
-            ImGui::Text("Off for this session: %s.", reason);
+            ImGui::TextWrapped("%s", reason);
             ImGui::SameLine();
 
             if (nativeVk)

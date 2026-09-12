@@ -23,9 +23,12 @@ input picture has already been reconstructed by the game. Finished-picture proce
 the captured matching depth/motion, reset and frame-time metadata. Frame hold zeroes velocity.
 Reset accounting uses NR evaluations, not generated presentation frames.
 
-Initialization waits for an actual command-list submission on the same direct queue before
-evaluation. Resizes/queue changes and Retry retire the previous context with NR's existing
-GPU lifetime tracking. Outstanding retired contexts are bounded. Allocation, initialization
+Initialization learns the producer queue from the actual submission of its command list; the
+swapchain's potentially separate Streamline presentation queue is not used as a gate.
+Resizes/explicit queue changes and Retry retire the previous context using a dedicated instance
+of NR's GPU lifetime tracker, covering only that context's recordings. Unrelated NR recordings
+cannot pin it. Active and retired contexts continue receiving submission/reset notifications.
+Outstanding retired contexts are bounded. Allocation, initialization
 or evaluation failures retain the clean frame and report a status; there is no automatic
 spatial fallback. Native Vulkan and pre-upscale placement report unsupported use of this mode.
 DX12-based bridges use the shared DX12 implementation. No helper DLL is added.

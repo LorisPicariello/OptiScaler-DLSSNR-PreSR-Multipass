@@ -4,9 +4,21 @@
 void DlssNr_Dx12::State::ReleaseEnlarger()
 {
     if (!enlarger) return;
-    auto* old = enlarger.release();
-    ++*retiredEnlargers;
-    lifetime.Retire([old, count = retiredEnlargers] { delete old; --*count; });
+    retiredEnlargers.push_back(std::move(enlarger));
+    CollectEnlargers();
+}
+
+void DlssNr_Dx12::State::CollectEnlargers()
+{
+    if (collectingEnlargers) return;
+    collectingEnlargers = true;
+    // Release NGX only after container mutation: its destruction can re-enter queue hooks.
+    std::vector<std::unique_ptr<Enlarger>> completed;
+    for (auto& old : retiredEnlargers)
+        if (old->lifetime.Idle()) completed.push_back(std::move(old));
+    std::erase_if(retiredEnlargers, [](const auto& old) { return !old; });
+    completed.clear();
+    collectingEnlargers = false;
 }
 
 ID3D12Resource* DlssNr_Dx12::State::EnlargeMatchedResidual(ID3D12GraphicsCommandList* cmd,
@@ -25,23 +37,26 @@ ID3D12Resource* DlssNr_Dx12::State::EnlargeMatchedResidual(ID3D12GraphicsCommand
         ReleaseEnlarger();
         return say("Matched residual + DLSS requires NR after the game upscaler.");
     }
-    auto* queue = timingQueue ? timingQueue : (ID3D12CommandQueue*)::State::Instance().currentCommandQueue;
+    // The swapchain queue can be Streamline's presentation queue, not the NR producer.
+    // Native processing learns its queue from the actual creation submission below.
+    auto* queue = timingQueue;
     ID3D12CommandQueue* realQueue = nullptr;
     if (queue && Util::CheckForRealObject(__FUNCTION__, queue, (IUnknown**)&realQueue)) queue = realQueue;
-    if (!queue || queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
+    if (cmd->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT ||
+        (queue && queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT))
         return say("Waiting for the NR direct command queue.");
     Microsoft::WRL::ComPtr<ID3D12Device> queueDevice;
-    if (FAILED(queue->GetDevice(IID_PPV_ARGS(&queueDevice))) || queueDevice.Get() != device)
+    if (queue && (FAILED(queue->GetDevice(IID_PPV_ARGS(&queueDevice))) || queueDevice.Get() != device))
         return say("NR DLSS enlargement queue/device mismatch.");
     const auto desc = proxy->GetDesc();
     const unsigned w = unsigned(desc.Width), h = desc.Height;
     if (enlarger && (enlarger->w != w || enlarger->h != h || enlarger->outW != resolve.Width ||
-        enlarger->outH != resolve.Height || enlarger->queue.Get() != queue ||
+        enlarger->outH != resolve.Height || (queue && enlarger->queue.Get() != queue) ||
         enlarger->depthInverted != frame.DepthInverted)) ReleaseEnlarger();
-    lifetime.Collect();
+    CollectEnlargers();
     if (!enlarger)
     {
-        if (*retiredEnlargers >= 4) return say("Waiting for retired DLSS enlargement work.");
+        if (retiredEnlargers.size() >= 4) return say("Waiting for retired DLSS enlargement work.");
         enlarger = std::make_unique<Enlarger>();
         auto& g = *enlarger;
         g.w = w; g.h = h; g.outW = resolve.Width; g.outH = resolve.Height;
@@ -55,6 +70,7 @@ ID3D12Resource* DlssNr_Dx12::State::EnlargeMatchedResidual(ID3D12GraphicsCommand
         if (!g.input || !g.output || !g.depth || !g.motion || !g.exposure)
             return say("DLSS enlargement resource allocation failed; use Retry.");
         lifetime.Record(cmd);
+        g.lifetime.Record(cmd);
         DlssNrConstants unit {}; unit.Mode = DlssNrMode_UnitExposure; unit.Width = unit.Height = 1;
         if (!shader.DispatchPass(cmd, unit, proxy, nullptr, nullptr, nullptr, nullptr, g.exposure.Get(), nullptr))
             return say("DLSS enlargement exposure initialization failed; use Retry.");
@@ -81,6 +97,7 @@ ID3D12Resource* DlssNr_Dx12::State::EnlargeMatchedResidual(ID3D12GraphicsCommand
         frame.DepthSubrectBaseX, frame.DepthSubrectBaseY, frame.MotionSubrectBaseX, frame.MotionSubrectBaseY);
     if (!regions.depth.valid() || !regions.motion.valid()) return say("DLSS enlargement needs valid depth and motion.");
     lifetime.Record(cmd);
+    g.lifetime.Record(cmd);
     DlssNrConstants encode {}; encode.Mode = DlssNrMode_EncodeProxyResidual;
     encode.Width = w; encode.Height = h; encode.Passthrough = resolve.Passthrough;
     bool ok = shader.DispatchPass(cmd, encode, proxy, answer, nullptr, nullptr, nullptr, g.input.Get(), nullptr);

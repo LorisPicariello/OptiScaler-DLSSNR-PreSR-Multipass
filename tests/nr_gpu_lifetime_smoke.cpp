@@ -195,7 +195,31 @@ try
         });
         expect(outer == 1 && nested == 64 && life.Idle(), "reentrant retirement did not drain exactly once");
     }
-    std::puts("NR GPU lifetime smoke passed");
+    {
+        // An unrelated open NR recording must not pin a retired private DLSS context.
+        DlssNr::GpuLifetime common, privateDlss;
+        ComPtr<ID3D12CommandAllocator> localAllocator;
+        ComPtr<ID3D12GraphicsCommandList> unrelated, work;
+        check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&localAllocator)));
+        check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, localAllocator.Get(), nullptr,
+                                        IID_PPV_ARGS(&unrelated)));
+        check(unrelated->Close());
+        check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, localAllocator.Get(), nullptr,
+                                        IID_PPV_ARGS(&work)));
+        check(work->Close());
+        common.Record(unrelated.Get()); common.Record(work.Get()); privateDlss.Record(work.Get());
+        bool commonReleased = false, privateReleased = false;
+        common.Retire([&] { commonReleased = true; });
+        privateDlss.Retire([&] { privateReleased = true; });
+        ID3D12CommandList* submitted[] { work.Get() };
+        queue->ExecuteCommandLists(1, submitted);
+        common.Submitted(queue.Get(), 1, submitted); privateDlss.Submitted(queue.Get(), 1, submitted);
+        wait(); work.Reset(); common.Collect(); privateDlss.Collect();
+        expect(privateReleased && privateDlss.Idle() && !commonReleased && !common.Idle(),
+               "private DLSS retirement depends on unrelated NR recordings");
+        unrelated.Reset(); common.Collect(); expect(commonReleased, "unrelated recording did not retire");
+    }
+    std::puts("NR GPU lifetime smoke passed (including isolated private DLSS retirement)");
     return 0;
 }
 catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }
