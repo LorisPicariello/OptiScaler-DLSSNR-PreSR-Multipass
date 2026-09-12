@@ -18,7 +18,6 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
     const auto workWidth = work.width, workHeight = work.height;
     const bool cropColor = frame.BeforeUpscale && (width != desc.Width || height != desc.Height);
     const bool reduced = workWidth != width || workHeight != height;
-    const bool residualAcrossRr = frame.ResidualAcrossRr && frame.BeforeUpscale;
     ReleaseSurfacesIfFormatChanged(desc.Format);
 
     const bool resolutionChanged =
@@ -31,8 +30,6 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
     // never called, which is why every one of these controls appeared to do nothing until something
     // else -- a resolution change -- happened to force a rebuild by accident.
     const bool tuningChanged = !TuningMatchesFeature(cfg, requestedPasses);
-    if (tuningChanged)
-        nr.residualHistoryPrimed = false;
 
     if (resolutionChanged || placementChanged || (nr.models[0].HasFeature() && tuningChanged))
     {
@@ -58,13 +55,6 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
             ParkNrResource(nr.colorSmall);
             ParkNrResource(nr.outputNative);
             ParkNrResource(nr.activeColor);
-            ParkNrResource(nr.residualEdited);
-            ParkNrResource(nr.residualHistory[0]);
-            ParkNrResource(nr.residualHistory[1]);
-            ParkNrResource(nr.residualComposed);
-            nr.residualStoreValid = false;
-            nr.residualHistoryIndex = 0;
-            nr.residualHistoryPrimed = false;
             nr.passScratchFailed = false;
         }
     }
@@ -91,35 +81,6 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
         nr.reason = "the pre-SR active colour staging texture could not be allocated";
         LOG_ERROR("DLSS-NR unavailable: {}", nr.reason);
         return false;
-    }
-
-    // All carriers rest in NPSR, including their first use. CreateScratch starts
-    // in UAV, so transition only newly allocated resources here.
-    if (residualAcrossRr)
-    {
-        auto ensureReadable = [&](ID3D12Resource*& resource, DXGI_FORMAT format, unsigned w, unsigned h)
-        {
-            if (resource == nullptr)
-            {
-                resource = CreateScratch(device, format, w, h);
-                if (resource)
-                    Barrier(cmdList, resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            }
-            return resource != nullptr;
-        };
-        if (shader._residualPipelineState == nullptr ||
-            !ensureReadable(nr.residualEdited, desc.Format, width, height) ||
-            !ensureReadable(nr.residualHistory[0], DXGI_FORMAT_R16G16B16A16_FLOAT, width, height) ||
-            !ensureReadable(nr.residualHistory[1], DXGI_FORMAT_R16G16B16A16_FLOAT, width, height) ||
-            !ensureReadable(nr.residualComposed, nr.residualOutputFormat, nr.residualOutputWidth,
-                            nr.residualOutputHeight))
-        {
-            ReportSkipOnce("RR residual resources unavailable; preserving the game's colour");
-            nr.residualStoreValid = false;
-            nr.residualHistoryPrimed = false;
-                return false;
-        }
     }
 
     if (requestedPasses == 1)

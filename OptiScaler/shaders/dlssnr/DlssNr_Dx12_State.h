@@ -1,5 +1,6 @@
 #pragma once
 #include "DlssNr_Dx12_ModelState.h"
+#include <dlssnr/DlssNr_Placement.h>
 #include <dlssnr/PassProfiles.h>
 
 #include <set>
@@ -242,6 +243,7 @@ struct DlssNr_Dx12::State
             bool occupied[MarkerCount] {};
             unsigned nextMarker = 0, lastMarker = 0;
             bool everRecorded = false, smallReadable = false, reset = true, failed = false;
+            bool rayReconstruction = false, finishedPicture = false;
             DlssNr::PrivateUpscaler backend = DlssNr::PrivateUpscaler::DLSS;
             std::unique_ptr<DlssNr::PrivateUpscalerDx12> upscaler;
             DlssNr::PrivateUpscalerFrameDx12 frame;
@@ -317,7 +319,7 @@ struct DlssNr_Dx12::State
         bool Allocate(Generation& g);
 
         void Before(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source, unsigned long long epoch,
-                    unsigned long long submittedEpoch, ID3D12CommandQueue* queue, bool interop);
+                    unsigned long long submittedEpoch, ID3D12CommandQueue* queue, bool interop, bool rayReconstruction);
 
         void After(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source, unsigned long long epoch);
 
@@ -438,10 +440,6 @@ struct DlssNr_Dx12::State
 
     void RetryAfterFailure();
 
-    // Consume only the residual produced by this exact CPU evaluate. Dispatch failures
-    // leave the RR output untouched, and every exit restores the caller's bindings.
-    void ApplyResidualAcrossRr(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params);
-
     // Adapt the game's NGX parameters into the explicit NR frame contract.
     void EvaluateInternal(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params, bool beforeUpscale,
                           ID3D12CommandQueue* timingQueue, bool rayReconstruction, unsigned long long submissionEpoch,
@@ -507,7 +505,6 @@ struct DlssNr_Dx12::State
     unsigned lastFinishedMode = 0;
     bool reportedPadding = false;
     bool warnedSubrect = false;
-    bool announcedResidualAcrossRr = false;
     ApiUpscalerInput saidApi = (ApiUpscalerInput) -1;
     float loggedExposure = -1.0f;
     float loggedScan = -1.0f;

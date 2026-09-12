@@ -3,6 +3,7 @@
 #include "DlssNrFeature_Vk_Internal.h"
 #include "DlssNrFeature_Dx12.h"
 #include "DlssNr_Status.h"
+#include "DlssNr_Placement.h"
 #include <nvsdk_ngx_vk.h>
 #include "PassProfiles.h"
 
@@ -32,7 +33,9 @@ bool ModelVk::Impl::Evaluate(VkCommandBuffer cmdBuffer, const VkImageInfo& colou
     const bool rayReconstruction = frame.RayReconstruction;
     auto& cfg = *Config::Instance();
 
-    if (cfg.DlssNrDeferredDlss.value_or_default() && !rayReconstruction && !frame.FinishedPicture)
+    if (ResolvePlacement(cfg.DlssNrRunBeforeSr.value_or_default(), cfg.DlssNrDeferredDlss.value_or_default(),
+                         cfg.DlssNrResidualAcrossRr.value_or_default(), cfg.DlssNrFinishedPicture.value_or_default()).deferred &&
+        !frame.FinishedPicture)
     {
 
         if (!warnedDeferred)

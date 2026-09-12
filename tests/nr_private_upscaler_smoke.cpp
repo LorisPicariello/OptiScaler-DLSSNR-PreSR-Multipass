@@ -58,7 +58,16 @@ struct NVNGXProxy {
 #define FN(alias,name) static auto alias(){return (decltype(&name))GetProcAddress(module,#name);}
     FN(D3D12_AllocateParameters,NVSDK_NGX_D3D12_AllocateParameters)
     FN(D3D12_DestroyParameters,NVSDK_NGX_D3D12_DestroyParameters)
-    FN(D3D12_CreateFeature,NVSDK_NGX_D3D12_CreateFeature)
+    static inline unsigned srCreates = 0;
+    static NVSDK_NGX_Result CreateSr(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Feature id,
+                                    NVSDK_NGX_Parameter* parameters, NVSDK_NGX_Handle** handle) {
+        if (id != NVSDK_NGX_Feature_SuperSampling)
+            throw std::runtime_error("Private edit upscaler requested a non-SR NGX feature");
+        ++srCreates;
+        return ((decltype(&NVSDK_NGX_D3D12_CreateFeature))GetProcAddress(module,
+            "NVSDK_NGX_D3D12_CreateFeature"))(cmd,id,parameters,handle);
+    }
+    static auto D3D12_CreateFeature() { return &CreateSr; }
     FN(D3D12_EvaluateFeature,NVSDK_NGX_D3D12_EvaluateFeature)
     FN(D3D12_ReleaseFeature,NVSDK_NGX_D3D12_ReleaseFeature)
 #undef FN
@@ -185,6 +194,8 @@ int wmain(int argc,wchar_t** argv) try {
         else expect(a<0.4f && b>0.45f && b<0.55f && c>0.6f,"Private upscaler lost the signed regions");
         readback->Unmap(0,nullptr);
     }
+    if (selected == DlssNr::PrivateUpscaler::DLSS)
+        expect(NVNGXProxy::srCreates == 2, "Both private contexts must use SuperSampling, never RR");
     f.depth.resource=nullptr;
     expect(!feature->Evaluate(commands.Get(),f),"Missing guide was accepted");
     feature.reset(); other.reset(); CloseHandle(event);

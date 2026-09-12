@@ -1642,4 +1642,7 @@
   <ItemGroup>
     <ClInclude Include="shaders\dlssnr\DlssNr_Dx12_ModelState.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="dlssnr\DlssNr_Placement.h"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
 </Project>

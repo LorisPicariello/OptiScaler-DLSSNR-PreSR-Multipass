@@ -25,8 +25,10 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     }
     LateContext::Slot* latest = nullptr;
     const auto epoch = ::State::Instance().frameCount;
-    const bool residualOnly = Config::Instance()->DlssNrRunBeforeSr.value_or_default() ||
-                              Config::Instance()->DlssNrDeferredDlss.value_or_default();
+    const auto& cfg = *Config::Instance();
+    const bool residualOnly = DlssNr::ResolvePlacement(
+        cfg.DlssNrRunBeforeSr.value_or_default(), cfg.DlssNrDeferredDlss.value_or_default(),
+        cfg.DlssNrResidualAcrossRr.value_or_default(), true).deferred;
     for (auto& slot : late.slots)
     {
         if (!slot.pending || !slot.submitted)

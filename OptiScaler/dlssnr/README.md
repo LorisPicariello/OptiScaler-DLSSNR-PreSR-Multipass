@@ -31,7 +31,9 @@ Unsupported pre-SR shapes select post-SR fallback where valid. See
 Vulkan supports its own finished-picture route under the constraints in
 [NR-FINISHED-BRIDGES.md](../../docs/NR-FINISHED-BRIDGES.md).
 `DeferredDLSS` generates a signed edit before SR, processes it through a private DLSS, FSR 2.2,
-FidelityFX or XeSS context, and composes it after the game's SR. Its backend contract carries
+FidelityFX or XeSS context, and composes it after the game's SR or RR+SR, or at presentation when `FinishedPicture` is enabled.
+The private context always performs SR without RR. The legacy `ResidualAcrossRR` key aliases this
+unified route; its separate accumulator has been removed. Its backend contract carries
 explicit guide states, dimensions and camera metadata; it does not change the game-facing
 backend factory. Deferred private SR and exposure scanning use D3D12, including its bridges.
 

@@ -6,7 +6,7 @@ auto DlssNr_Dx12::State::DeferredSrContext::Say(const std::string& text) -> void
     if (status == text)
         return;
     status = text;
-    LOG_INFO("DLSS-NR deferred DLSS: {}", text);
+    LOG_INFO("DLSS-NR deferred upscale: {}", text);
 }
 
 auto DlssNr_Dx12::State::DeferredSrContext::Cancel() -> void
@@ -69,7 +69,7 @@ auto DlssNr_Dx12::State::DeferredSrContext::Allocate(Generation& g) -> bool
 }
 
 auto DlssNr_Dx12::State::DeferredSrContext::Before(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* source, unsigned long long epoch,
-                    unsigned long long submittedEpoch, ID3D12CommandQueue* queue, bool interop) -> void
+                    unsigned long long submittedEpoch, ID3D12CommandQueue* queue, bool interop, bool rayReconstruction) -> void
 {
     if (pending.cmd && current)
     {
@@ -160,12 +160,17 @@ auto DlssNr_Dx12::State::DeferredSrContext::Before(ID3D12GraphicsCommandList* cm
                      (NVSDK_NGX_DLSS_Feature_Flags_DepthInverted | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
                       NVSDK_NGX_DLSS_Feature_Flags_MVJittered);
     const auto backend = DlssNr::GetPrivateUpscaler(cfg.DlssNrPrivateUpscaler.value_or_default());
-    if (current && (current->backend != backend || current->device != device || current->queue != ownerQueue ||
+    if (current && (current->rayReconstruction != rayReconstruction ||
+                    current->finishedPicture != cfg.DlssNrFinishedPicture.value_or_default() ||
+                    current->backend != backend || current->device != device || current->queue != ownerQueue ||
                     current->w != active->width ||
                     current->h != active->height || current->outW != outDesc.Width ||
                     current->outH != outDesc.Height || current->inputFormat != inDesc.Format ||
                     current->outputFormat != outDesc.Format || current->flags != flags))
+    {
+        owner.late.Cancel();
         retired.push_back(std::move(current));
+    }
     if (!current)
     {
         if (retired.size() >= 4)
@@ -186,6 +191,8 @@ auto DlssNr_Dx12::State::DeferredSrContext::Before(ID3D12GraphicsCommandList* cm
         current->outputFormat = outDesc.Format;
         current->flags = flags;
         current->backend = backend;
+        current->rayReconstruction = rayReconstruction;
+        current->finishedPicture = cfg.DlssNrFinishedPicture.value_or_default();
         if (!Allocate(*current))
         {
             current->failed = true;
@@ -271,6 +278,7 @@ auto DlssNr_Dx12::State::DeferredSrContext::Before(ID3D12GraphicsCommandList* cm
 
     DlssNrFrameInfo frame {};
     frame.BeforeUpscale = frame.PrivateColorCopy = true;
+    frame.RayReconstruction = rayReconstruction;
     frame.SubmissionEpoch = submittedEpoch;
     frame.RenderSubrectWidth = g.w;
     frame.RenderSubrectHeight = g.h;
@@ -361,8 +369,8 @@ auto DlssNr_Dx12::State::DeferredSrContext::Before(ID3D12GraphicsCommandList* cm
             auto& f = g.frame;
             f.color = { g.residualInput, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
             f.output = { g.residualOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
-            f.depth = { depth, inputStates.depth };
-            f.motion = { motion, inputStates.motion };
+            f.depth = { depth, depth == color ? arrival : inputStates.depth };
+            f.motion = { motion, motion == color ? arrival : inputStates.motion };
             f.exposure = { g.exposure, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
             f.width = g.w;
             f.height = g.h;

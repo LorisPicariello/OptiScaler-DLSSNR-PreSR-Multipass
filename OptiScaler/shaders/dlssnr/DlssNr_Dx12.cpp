@@ -388,10 +388,10 @@ bool DlssNr_Dx12::ProcessSeam(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Paramete
     _state->featureFlags = featureFlags;
     const auto& cfg = *Config::Instance();
     // Both seams reach this scheduler; ordinary passes remain in the shared shader pipeline.
-    const bool special = cfg.DlssNrFinishedPicture.value_or_default() ||
-                         (!rayReconstruction && cfg.DlssNrDeferredDlss.value_or_default()) ||
-                         (rayReconstruction && cfg.DlssNrRunBeforeSr.value_or_default() &&
-                          cfg.DlssNrResidualAcrossRr.value_or_default());
+    const auto placement = DlssNr::ResolvePlacement(
+        cfg.DlssNrRunBeforeSr.value_or_default(), cfg.DlssNrDeferredDlss.value_or_default(),
+        cfg.DlssNrResidualAcrossRr.value_or_default(), cfg.DlssNrFinishedPicture.value_or_default());
+    const bool special = placement.finished || placement.deferred;
     if (special)
         _state->EvaluateInternal(cmd, params, beforeUpscale, queue, rayReconstruction, submissionEpoch, interop);
     else
@@ -409,9 +409,6 @@ bool DlssNr_Dx12::ProcessSeam(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Paramete
         }
         _state->late.Cancel();
         _state->deferredSr.Cancel();
-        _state->nr.residualPair.Cancel();
-        _state->nr.residualStoreValid = false;
-        _state->nr.residualHistoryPrimed = false;
     }
     _state->Publish();
     return special;

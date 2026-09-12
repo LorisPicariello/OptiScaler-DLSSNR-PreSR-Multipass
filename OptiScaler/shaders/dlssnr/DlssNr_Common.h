@@ -92,12 +92,6 @@ struct DlssNrFrameInfo
     // Reset temporal history when switching between ordinary SR and Ray Reconstruction.
     bool RayReconstruction = false;
 
-    // ResidualAcrossRR (additive v1): this pre-SR evaluate must leave the game's Color untouched --
-    // the resolve writes an owned scratch, the model edit is captured as a signed residual, and the
-    // post-SR seam adds it back onto the RR+SR output. Only ever true on the before-upscale seam and
-    // only when RunBeforeSR + RayReconstruction are both active.
-    bool ResidualAcrossRr = false;
-
     // Submission epoch supplied by the caller. Native DX12 uses the wrapped swapchain Present count;
     // the DX11/Vulkan bridges use their successfully submitted frame counter. A feature created in an
     // epoch is never evaluated until this value changes.

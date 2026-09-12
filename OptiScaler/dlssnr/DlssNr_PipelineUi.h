@@ -21,7 +21,6 @@ enum class Route
     Before,
     After,
     Deferred,
-    AcrossRr,
     Finished,
     FinishedBefore
 };
@@ -112,7 +111,7 @@ inline void Draw(const View& view, Section& selected)
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const float width = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
     const float gap = ImGui::GetFontSize() * 1.5f;
-    const bool split = view.enabled && (view.route == Route::Deferred || view.route == Route::AcrossRr ||
+    const bool split = view.enabled && (view.route == Route::Deferred ||
                                         view.route == Route::FinishedBefore);
     const bool finished = view.route == Route::Finished || view.route == Route::FinishedBefore;
     const float nodeWidth =
@@ -164,9 +163,7 @@ inline void Draw(const View& view, Section& selected)
     {
         // Only a separately carried edit branches. Both paths reunite at its application point.
         const int prep = prepare(-1, 1), nr = model(-1, 2);
-        const int edit = add(-1, 3, view.route == Route::AcrossRr ? "Accumulate NR edit" : "Upscale NR edit",
-                             view.route == Route::AcrossRr ? "Motion-guided residual"
-                                                          : std::string("Separate ") + view.privateUpscaler + " pass");
+        const int edit = add(-1, 3, "Upscale NR edit", std::string("Separate ") + view.privateUpscaler + " pass (no RR)");
         int game = upscale(1, 1);
         connect(input, prep);
         connect(prep, nr);

@@ -1,11 +1,24 @@
-# Experimental residual across RR
+# Carrying a pre-upscale NR edit across RR
 
-On D3D12, enable **Apply before Super Resolution** and **Carry the pre-SR edit across RR** while the game uses Ray Reconstruction. Both new settings default off/unchanged. Native Vulkan has no host integration for this option.
+Use **Generate before upscale, apply after upscale** for both SR and RR. NR edits an owned copy
+of the original input. The game processes clean Color through SR or RR+SR, while a separate
+non-RR DLSS, FSR 2.2, FidelityFX or XeSS context upscales the NR edit. Both paths share the same
+**Private NR upscaler** selector and generation/history lifecycle.
 
-NR resolves to a private render-resolution texture. A separate shader accumulates the signed difference from the original input, reprojecting with the game's active motion-vector rectangle and scale. After the same RR evaluation succeeds, a shader samples that history at output resolution and applies the shared detail strength once. The game's RR colour input is left untouched. Hold frame, Compare, Debug view and Show skin mask must be disabled for this mode.
+Also enable **Apply NR to the finished picture** to defer composition until presentation, after
+game effects and HUD. The game's RR output stays clean. This uses the existing bounded log-gain
+carrier and SDR/scRGB/HDR10 transfer, including optional HDR response matching.
 
-Only a successful pre-pass can arm the post-pass; command list, parameter block and output must match. A skipped/failed/new pre-pass invalidates the previous result. Carrier textures start in their actual resource state, and the composition texture tracks the output's allocation dimensions and format independently of the input. Missing resources/PSO, failed dispatch, unsupported output layout or zero strength do not copy an invalid result onto the RR output. The post-pass restores the game's root/descriptor state.
+The former **Carry the pre-SR edit across RR** checkbox and motion-guided accumulator are replaced
+by this unified route. Old `RunBeforeSR=true` plus `ResidualAcrossRR=true` INIs select it too.
+`ResidualAcrossRRBlend` is retained when saving old INIs but no longer controls processing;
+temporal reconstruction belongs to the private upscaler. Its histories are independent of RR.
 
-Cold history and cuts fade in at the configured blend rate (default 0.08). This is an experimental temporal average: view-dependent detail can smear and fast motion can lag. There is no depth-based disocclusion test, so motion validity alone does not establish that a surface is unchanged. It is not a claim of superior quality to post-RR NR.
+The private path runs on D3D12 and its bridges. Native Vulkan has no private SR adapter and
+reports that limitation. Early edit plus finished-picture composition supports D3D12 and the
+D3D11 bridge. Unsupported offsets, missing guides or unmatched/failed evaluations retain the
+clean game frame. See [private edit upscaling](DEFERRED-NR-DLSS.md) for configuration and limits.
 
-Validation: Release x64 build; the committed residual CSO executed through Windows WARP for cold/warm history, signed values, active MV offsets, invalid motion, render-to-output sampling, alpha and zero strength; CPU seam tests cover missing, mismatched, skipped and duplicate consumption. Both residual shader blobs/headers are regenerated from the source; the existing main NR shader is unchanged. No new gameplay quality or physical RTX 20/30 validation is claimed.
+Synthetic checks cover routing, matching seams, independent private contexts using SR-only NGX
+features, signed/neutral carrier reconstruction, and finished-picture HDR/SDR transfer. They do
+not establish moving-scene quality with noisy ray-traced input; gameplay verification remains necessary.

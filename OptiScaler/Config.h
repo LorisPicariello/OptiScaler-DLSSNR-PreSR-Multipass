@@ -268,14 +268,9 @@ class Config
     CustomOptional<bool> DlssNrDeferredDlss { false };
     // Private carrier only: 0 DLSS (legacy default), 1 FSR 2.2, 2 FidelityFX runtime, 3 XeSS.
     CustomOptional<int> DlssNrPrivateUpscaler { 0 };
-    // Experimental: with RunBeforeSR and the game's Ray Reconstruction both on, run NR before SR
-    // but leave the colour input untouched, then add the model's edit back onto the RR+SR output
-    // so it survives RR's denoise. v2 carries the edit as an MV-reprojected temporal accumulator
-    // (the per-frame ray-trace noise term averages to zero; the enhancement persists). Inert
-    // unless RunBeforeSR + RR are both active. Opt-in.
+    // Legacy INI alias: with RunBeforeSR, enables the same private SR edit path as DeferredDLSS.
     CustomOptional<bool> DlssNrResidualAcrossRr { false };
-    // v2 history blend rate for the accumulator above, 0.01..1. Lower = stabler but slower to
-    // appear; 1.0 = no accumulation (each frame's raw residual, which flickers). Default 0.08.
+    // Retained for INI compatibility; accumulation is now owned by the selected private upscaler.
     CustomOptional<float> DlssNrResidualAcrossRrBlend { 0.08f };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.

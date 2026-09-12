@@ -70,9 +70,6 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     const bool cropColor = frame.BeforeUpscale && (width != desc.Width || height != desc.Height);
     const bool targetSupportsUav = cropColor || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
 
-    // Resource/dispatch failures in this mode must preserve Color for RR.
-    const bool residualAcrossRr = frame.ResidualAcrossRr && frame.BeforeUpscale;
-
     const auto guideDesc = depth->GetDesc();
     const auto motionDesc = motion->GetDesc();
     const auto guides = DlssNr::ResolveGuideRegions(
@@ -105,9 +102,6 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     if (frame.Reset)
     {
         nr.reset = true;
-        // Drop the accumulated enhancement layer: a cut invalidates the reprojection history.
-        nr.residualHistoryPrimed = false;
-        nr.residualStoreValid = false;
 
         ++resets;
 
@@ -402,17 +396,11 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         ID3D12Resource* resolveAnswer = superDownOk ? nr.outputNative : finalAnswer;
 
         // Resolve pre-SR inputs without UAV support through an owned scratch and copy-back.
-        // Across-RR always writes owned residual storage and leaves Color untouched.
-        ID3D12Resource* resolveOriginal = residualAcrossRr ? nr.hdrCopy : (targetSupportsUav ? nr.hdrCopy : target);
+        ID3D12Resource* resolveOriginal = targetSupportsUav ? nr.hdrCopy : target;
         ID3D12Resource* resolveTarget =
-            residualAcrossRr ? nr.residualEdited : (targetSupportsUav ? target : nr.hdrCopy);
+            targetSupportsUav ? target : nr.hdrCopy;
 
-        if (residualAcrossRr)
-        {
-            Barrier(cmdList, nr.residualEdited, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }
-        else if (targetSupportsUav)
+        if (targetSupportsUav)
         {
             TransitionTarget(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
@@ -422,43 +410,10 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
 
-        // Apply the shared strength once, at the post-RR seam.
-        if (residualAcrossRr)
-            resolveParams.TransferStrength = 1.0f;
         const bool resolved = shader.DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer,
                                                   resolveOriginal, motionIn, exposureTex, resolveTarget, nullptr);
 
-        if (residualAcrossRr)
-        {
-            Barrier(cmdList, nr.residualEdited, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            const unsigned prev = nr.residualHistoryIndex & 1u;
-            const unsigned cur = prev ^ 1u;
-            Barrier(cmdList, nr.residualHistory[cur], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            DlssNrConstants accum {};
-            accum.Mode = DlssNrResidualMode_Accumulate;
-            accum.Width = width;
-            accum.Height = height;
-            accum.ResidualBlend = std::clamp(cfg.DlssNrResidualAcrossRrBlend.value_or_default(), 0.01f, 1.0f);
-            accum.ResidualHistoryValid = nr.residualHistoryPrimed ? 1u : 0u;
-            accum.GuideWidth = motionWidth;
-            accum.GuideHeight = motionHeight;
-            accum.ResidualMotionBaseX = motionBaseX;
-            accum.ResidualMotionBaseY = motionBaseY;
-            accum.MvScaleX = frame.MvScaleX / (float) width;
-            accum.MvScaleY = frame.MvScaleY / (float) height;
-            const bool accumulated = resolved && shader.DispatchResidualPass(
-                                                     cmdList, accum, nr.hdrCopy, nr.residualEdited,
-                                                     nr.residualHistory[prev], motionIn, nr.residualHistory[cur]);
-            Barrier(cmdList, nr.residualHistory[cur], D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            nr.residualHistoryPrimed = accumulated;
-            nr.residualStoreValid = accumulated;
-            if (accumulated)
-                nr.residualHistoryIndex = cur;
-        }
-        else if (!targetSupportsUav)
+        if (resolved && !targetSupportsUav)
         {
             Barrier(cmdList, nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
             const D3D12_RESOURCE_STATES priorTargetState = targetState;
@@ -507,8 +462,7 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
 
     // Failed evaluations leave the game's original image intact. A successful copy-back writes
     // only the active rectangle and restores both resources before DLSS consumes the image.
-    // ResidualAcrossRR never copies back -- Color must reach RR untouched.
-    FinishColor(result == NVSDK_NGX_Result_Success && finalAnswer != nullptr && !residualAcrossRr);
+    FinishColor(result == NVSDK_NGX_Result_Success && finalAnswer != nullptr);
     if (result == NVSDK_NGX_Result_Success && finalAnswer != nullptr)
         ++nr.successfulDispatches;
 

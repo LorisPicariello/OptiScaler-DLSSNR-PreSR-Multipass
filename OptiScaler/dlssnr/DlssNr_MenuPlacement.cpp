@@ -4,6 +4,7 @@
 #include "DlssNrFeature_Vk.h"
 #include "DlssNrFinished_Vk.h"
 #include "DlssNr_MenuSections.h"
+#include "DlssNr_Placement.h"
 #include "DlssNr_PipelineUi.h"
 #include <Config.h>
 #include <menu/menu_common.h>
@@ -28,41 +29,16 @@ void RenderPlacement(Config* config, float menuResScale)
             ImGui::TextWrapped("%s", DlssNr::FinishedPictureStatus().c_str());
     }
 
-    const bool beforeSr = config->DlssNrRunBeforeSr.value_or_default() ||
-                          (finishedPicture && config->DlssNrDeferredDlss.value_or_default());
-    const auto activeFeature = State::Instance().currentFeature;
-    const bool rayReconstruction = activeFeature && activeFeature->GetUpscalerType() == Upscaler::DLSSD;
-    const bool deferredActive = !finishedPicture && config->DlssNrDeferredDlss.value_or_default() && !rayReconstruction;
-    if (!finishedPicture)
+    const auto placement = ResolvePlacement(config->DlssNrRunBeforeSr.value_or_default(),
+                                            config->DlssNrDeferredDlss.value_or_default(),
+                                            config->DlssNrResidualAcrossRr.value_or_default(), finishedPicture);
+    if (placement.deferred)
     {
-        bool residualAcrossRr = config->DlssNrResidualAcrossRr.value_or_default();
-        ImGui::BeginDisabled(deferredActive || !beforeSr);
-        if (ImGui::Checkbox("Carry the pre-SR edit across RR (experimental)", &residualAcrossRr))
-            config->DlssNrResidualAcrossRr = residualAcrossRr;
-        ImGui::EndDisabled();
-        HelpMarker("Keep the NR edit after RR. Requires early generation and RR.");
-
-        ImGui::BeginDisabled(deferredActive || !beforeSr || !residualAcrossRr);
-        float residualBlend = config->DlssNrResidualAcrossRrBlend.value_or_default();
-        if (ImGui::SliderFloat("Detail accumulation rate", &residualBlend, 0.01f, 1.0f, "%.2f"))
-            config->DlssNrResidualAcrossRrBlend = std::clamp(residualBlend, 0.01f, 1.0f);
-        ImGui::EndDisabled();
-        HelpMarker("Lower values accumulate more slowly and reduce flicker.");
+        ImGui::TextWrapped("Private upscale: %s", DlssNr::DeferredDlssStatus().c_str());
+        ImGui::TextWrapped(finishedPicture
+            ? "The game processes clean input through SR/RR and its effects. The separately upscaled NR edit is applied to the finished picture."
+            : "The game processes clean input through SR/RR. The separately upscaled NR edit is applied after upscale.");
     }
-    bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
-    if (!finishedPicture)
-    {
-        if (deferredDlss && rayReconstruction)
-            ImGui::TextWrapped("Generate before / apply after is unavailable with RR. Generate model before upscale "
-                               "controls NR placement.");
-        else if (deferredDlss)
-            ImGui::TextWrapped("Private SR: %s", DlssNr::DeferredDlssStatus().c_str());
-    }
-    else if (beforeSr)
-        ImGui::TextWrapped("Pre-SR changes: %s", DlssNr::DeferredDlssStatus().c_str());
-
-    // The toggle can be bound to a key, and nobody would think to look for it under Keybinds
-    // unless told. Dimmed, because it is a note rather than a setting.
 
 }
 
@@ -103,9 +79,11 @@ void RenderStatus(Config* config, float menuResScale)
         {
             ImGui::TextWrapped("NR needs the D3D12 bridge on D3D11. Choose an upscaler marked w/Dx12 and restart.");
         }
-        else if (nativeVk && config->DlssNrDeferredDlss.value_or_default())
+        else if (nativeVk && ResolvePlacement(config->DlssNrRunBeforeSr.value_or_default(),
+                     config->DlssNrDeferredDlss.value_or_default(),
+                     config->DlssNrResidualAcrossRr.value_or_default(), finishedPicture).deferred)
         {
-            ImGui::TextWrapped("Disable Generate before SR, apply after SR (DLSS) to use native Vulkan NR.");
+            ImGui::TextWrapped("The private edit-upscale path requires DirectX 12 or its bridge. Disable separate edit upscaling to use native Vulkan NR.");
         }
         else if (enabled)
             ImGui::TextUnformatted("Waiting for the upscaler to run.");

@@ -22,6 +22,8 @@ auto DlssNr_Dx12::State::LateContext::Cancel() -> void
     for (auto& slot : slots)
         if (slot.submitted)
             slot.pending = false;
+        else if (slot.pending)
+            slot.frame.OutputWidth = 0; // Invalidate presentation, retaining unsubmitted recording ownership.
     reset = true;
 }
 

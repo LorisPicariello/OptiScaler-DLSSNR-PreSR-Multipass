@@ -28,12 +28,8 @@ auto DlssNr_Dx12::State::ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed) -> v
     modelRunning = false;
 
     for (ID3D12Resource** r : { &nr.output, &nr.passScratch, &nr.colorCopy, &nr.hdrCopy, &nr.colorSmall,
-                                &nr.outputNative, &nr.activeColor, &nr.residualEdited, &nr.residualHistory[0],
-                                &nr.residualHistory[1], &nr.residualComposed })
+                                &nr.outputNative, &nr.activeColor })
         ParkNrResource(*r);
-    nr.residualStoreValid = false;
-    nr.residualHistoryPrimed = false;
-    nr.residualHistoryIndex = 0;
 
     nr.passScratchFailed = false;
 
@@ -266,17 +262,6 @@ auto DlssNr_Dx12::State::ReleaseResources() -> void
         lifetime.Retire([down = nr.superDown] { delete down; });
         nr.superDown = nullptr;
     }
-
-    for (ID3D12Resource** r :
-         { &nr.residualEdited, &nr.residualHistory[0], &nr.residualHistory[1], &nr.residualComposed })
-        if (*r != nullptr)
-        {
-            ParkNrResource(*r);
-        }
-    nr.residualPair.Cancel();
-    nr.residualStoreValid = false;
-    nr.residualHistoryPrimed = false;
-    nr.residualHistoryIndex = 0;
 
     if (nr.outputNative != nullptr)
     {

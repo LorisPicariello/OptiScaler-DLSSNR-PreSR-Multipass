@@ -19,13 +19,10 @@ D3D12 GPU markers protect model creation readiness and retirement; logical submi
 coordinate Before/After pairing but do not establish GPU completion. Vulkan uses a creation
 event and drains the device before replacing owned model resources.
 
-## Across-RR residual
+## Separate edit upscaling, including RR
 
-`ResidualAcrossRR` with pre-SR placement generates an edit while preserving RR's original Color
-input. A signed residual history is reprojected through the active motion-vector rectangle and
-accumulated before composition at the post-RR seam. Pairing requires the producing command list,
-parameters and output identity; resets and failed dispatches invalidate the residual.
-See [the residual contract](../../../docs/RESIDUAL-ACROSS-RR.md).
-
-The separate deferred private-upscaler path applies only to supported SR routes and has its own
-history/generation ownership. See [deferred NR](../../../docs/DEFERRED-NR-DLSS.md).
+`DeferredDLSS` runs NR before SR/RR on owned Color and upscales only the edit with an independent
+non-RR backend. It applies the result after the game upscaler, or saves it for presentation when
+`FinishedPicture` is enabled. `RunBeforeSR` plus legacy `ResidualAcrossRR` selects the same route.
+The former temporal accumulator is replaced by the private upscaler's independent history.
+See [private edit upscaling](../../../docs/DEFERRED-NR-DLSS.md).

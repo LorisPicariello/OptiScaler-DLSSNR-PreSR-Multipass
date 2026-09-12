@@ -18,3 +18,6 @@ Two simultaneous contexts process a neutral 0.5 carrier and signed 0.25/0.5/0.75
 This is a static synthetic smoke test, not moving-scene quality, game integration, backend-switch stress, or delayed/replayed-command lifetime coverage. The NR owner must keep a generation alive until its commands complete, including failed creation/evaluation.
 
 Validated locally on 2026-09-12 with installed runtimes: DLSS, linked FSR 2.2, FidelityFX upscale API and XeSS all passed the production-adapter smoke. The D3D12 debug layer was unavailable for these runs, so validation was GPU completion and output readback only.
+
+The DLSS loader seam additionally asserts that both private NGX contexts are created as
+`NVSDK_NGX_Feature_SuperSampling`, never Ray Reconstruction. RR is owned only by the game.

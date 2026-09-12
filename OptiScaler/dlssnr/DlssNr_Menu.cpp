@@ -4,6 +4,7 @@
 #include "DlssNr_PipelineUi.h"
 #include "DlssNr_Upscaler.h"
 #include "DlssNr_MenuSections.h"
+#include "DlssNr_Placement.h"
 #include <Config.h>
 #include <menu/menu_common.h>
 #include <algorithm>
@@ -39,22 +40,21 @@ void RenderMenu(Config* config, float menuResScale)
         const auto feature = State::Instance().currentFeature;
         const bool rayReconstruction = feature && feature->GetUpscalerType() == Upscaler::DLSSD;
         bool finished = config->DlssNrFinishedPicture.value_or_default();
-        const bool deferredActive = !finished && config->DlssNrDeferredDlss.value_or_default() && !rayReconstruction;
-        bool generateBefore = config->DlssNrRunBeforeSr.value_or_default() ||
-                              (finished && config->DlssNrDeferredDlss.value_or_default()) || deferredActive;
+        auto placement = ResolvePlacement(config->DlssNrRunBeforeSr.value_or_default(),
+                                          config->DlssNrDeferredDlss.value_or_default(),
+                                          config->DlssNrResidualAcrossRr.value_or_default(), finished);
+        bool generateBefore = placement.beforeUpscale;
         ImGui::SameLine(toggleRight);
-        ImGui::BeginDisabled(deferredActive);
+        ImGui::BeginDisabled(placement.deferred);
         if (PipelineUi::CheckboxWrapped("Generate model before upscale", &generateBefore, toggleWidth))
         {
             config->DlssNrRunBeforeSr = generateBefore;
-            if (finished)
-                config->DlssNrDeferredDlss = false;
+            config->DlssNrResidualAcrossRr = false;
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(deferredActive ? "This mode always generates before upscale."
-                              : finished ? "Generate early; apply the edit to the finished frame."
-                                         : "Run NR before the upscaler.");
+            ImGui::SetTooltip(placement.deferred ? "The separate-edit path always generates before upscale."
+                                               : "Run NR before the game's upscaler, including RR.");
 
         if (PipelineUi::CheckboxWrapped("Apply NR to the finished picture", &finished, toggleWidth))
         {
@@ -62,29 +62,35 @@ void RenderMenu(Config* config, float menuResScale)
             DlssNr::RetryAfterFailure();
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Apply NR after game effects and HUD.");
+            ImGui::SetTooltip("Apply NR after game effects and HUD. Early generation carries the edit through a separate upscaler.");
 
+        placement = ResolvePlacement(config->DlssNrRunBeforeSr.value_or_default(),
+                                     config->DlssNrDeferredDlss.value_or_default(),
+                                     config->DlssNrResidualAcrossRr.value_or_default(), finished);
         ImGui::SameLine(toggleRight);
-        bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
-        ImGui::BeginDisabled(finished);
-        if (PipelineUi::CheckboxWrapped("Generate before SR, apply after SR", &deferredDlss, toggleWidth))
-            config->DlssNrDeferredDlss = deferredDlss;
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(finished ? "Use Generate model before upscale."
-                                      : "Generate early, upscale the edit with the private backend, then apply it after SR.");
+        bool deferred = placement.deferred;
+        if (PipelineUi::CheckboxWrapped("Generate before upscale, apply after upscale", &deferred, toggleWidth))
+        {
+            config->DlssNrDeferredDlss = deferred;
+            config->DlssNrResidualAcrossRr = false; // Clear the legacy alias when the unified option changes.
+            if (deferred || finished)
+                config->DlssNrRunBeforeSr = deferred;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Keep the game's SR/RR input clean and upscale only the NR edit with a separate non-RR backend."
+                              "\nApply after upscale, or at presentation when finished-picture mode is enabled.");
         ImGui::Spacing();
 
-        const auto privateFeature = State::Instance().currentFeature;
-        const bool nativePrivateVk =
-            privateFeature && privateFeature->Api() == API::Vulkan && !privateFeature->IsWithDx12();
-        if (!rayReconstruction && !nativePrivateVk &&
-            (deferredDlss || (finished && config->DlssNrRunBeforeSr.value_or_default())))
+        placement = ResolvePlacement(config->DlssNrRunBeforeSr.value_or_default(),
+                                     config->DlssNrDeferredDlss.value_or_default(),
+                                     config->DlssNrResidualAcrossRr.value_or_default(), finished);
+        const bool nativePrivateVk = feature && feature->Api() == API::Vulkan && !feature->IsWithDx12();
+        if (placement.deferred && !nativePrivateVk)
         {
             int backend = (int) GetPrivateUpscaler(config->DlssNrPrivateUpscaler.value_or_default());
             if (ImGui::Combo("Private NR upscaler", &backend, "DLSS\0FSR 2.2\0FSR (FidelityFX)\0XeSS\0"))
                 config->DlssNrPrivateUpscaler = backend;
-            HelpMarker("Upscales the NR edit. FSR (FidelityFX) and XeSS need their runtimes.");
+            HelpMarker("Upscales only the NR edit, with or without game RR. FSR (FidelityFX) and XeSS need their runtimes.");
         }
 
         PipelineUi::View view;
@@ -94,16 +100,12 @@ void RenderMenu(Config* config, float menuResScale)
         view.passes = config->DlssNrPasses.value_or_default();
         view.scalePercent = (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
         view.rayReconstruction = rayReconstruction;
-        const bool before = config->DlssNrRunBeforeSr.value_or_default();
-        const bool deferred = config->DlssNrDeferredDlss.value_or_default();
         if (finished)
-            view.route = before || deferred ? PipelineUi::Route::FinishedBefore : PipelineUi::Route::Finished;
-        else if (deferred && !view.rayReconstruction)
+            view.route = placement.deferred ? PipelineUi::Route::FinishedBefore : PipelineUi::Route::Finished;
+        else if (placement.deferred)
             view.route = PipelineUi::Route::Deferred;
-        else if (before && view.rayReconstruction && config->DlssNrResidualAcrossRr.value_or_default())
-            view.route = PipelineUi::Route::AcrossRr;
         else
-            view.route = before ? PipelineUi::Route::Before : PipelineUi::Route::After;
+            view.route = placement.beforeUpscale ? PipelineUi::Route::Before : PipelineUi::Route::After;
 
         static PipelineUi::Section selected = PipelineUi::Section::Placement;
         ImGui::Separator();

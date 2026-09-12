@@ -3,7 +3,6 @@
 #include <dlssnr/PassProfiles.h>
 #include <dlssnr/DlssNrFeature_Dx12.h>
 #include <shaders/output_scaling/OS_Dx12.h>
-#include "DlssNr_ResidualPair.h"
 
 namespace DlssNr::Detail
 {
@@ -42,19 +41,6 @@ struct ModelStateDx12
     ID3D12Resource* outputNative = nullptr;
     OS_Dx12* superDown = nullptr;
     Scaler nrScaler = Scaler::Count;
-
-    // Across-RR keeps Color untouched and carries a temporally accumulated signed edit to post-SR.
-    // The residual pair binds the edit to its producing command list, parameters and output.
-    ID3D12Resource* residualEdited = nullptr;   // resolve output on the pre-SR seam (render size)
-    ID3D12Resource* residualHistory[2] = {};    // accumulated enhancement layer, ping-pong (render size)
-    ID3D12Resource* residualComposed = nullptr; // Apply output = RR frame + delta (output size)
-    unsigned int residualHistoryIndex = 0;      // which residualHistory holds the latest layer
-    bool residualHistoryPrimed = false;         // false -> take the current delta whole (post-reset)
-    bool residualStoreValid = false;
-    bool residualModeActive = false;
-    unsigned residualOutputWidth = 0, residualOutputHeight = 0;
-    DXGI_FORMAT residualOutputFormat = DXGI_FORMAT_UNKNOWN;
-    DlssNrResidualPair residualPair;
 
     // Frame hold (design/frame-hold.md): a persistent copy of the output taken on hold-on and restored
     // over the live output before the encode reads it while held, so a setting change re-renders the
