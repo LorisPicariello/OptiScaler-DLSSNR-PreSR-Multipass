@@ -13,6 +13,10 @@ The full-resolution original supplies base detail. Neutwo/Hybrid replace modes d
 reconstructed full-resolution proxy. Model debug view still shows the actual model answer.
 At 100% the private context is released and ordinary full-resolution NR is used.
 
+The signed carrier uses a 1/64 linear-light scale before FP16 storage, with the same scale
+in the decoder. At unit scale, small shadow edits rounded to neutral in KCD2's pre-tonemap
+picture. The scaled encoding preserves those edits; it does not change model strength.
+
 This is separate from pre-upscale residual-across-RR accumulation. It does not invoke private
 RR or change the game's upscaler. Classic and spatial matched residual remain available.
 
@@ -39,7 +43,11 @@ DX12-based bridges use the shared DX12 implementation. No helper DLL is added.
 The new shader operations are appended as 9 and 10; existing operation numbers and constant
 layout are unchanged. Matching DX12 and Vulkan binaries/headers are regenerated. WARP tests
 cover carrier reconstruction, neutral identity, guide offsets/scales, and existing shader
-behavior. Vulkan shader regressions, NR lifetime/proxy tests and the actual private DLSS SR
-adapter test are also exercised. Moving-scene quality, finished-picture alignment and bridge
-gameplay remain to be verified in-game. The extra DLSS pass costs GPU time and VRAM; the NR
+behavior, including shadow brightening/darkening through FP16 storage. Vulkan shader regressions,
+NR lifetime/proxy tests and the actual private DLSS SR adapter test are also exercised.
+Mixed-mode gameplay checks have run in BG3's DX11 bridge, KCD2, Hogwarts Legacy and Jedi Survivor.
+These are finite observations, not a complete compatibility certification. Ordinary post-upscale
+DLSS enlargement can still show a faint grid in KCD2 and possibly Hogwarts; spatial Matched residual
+avoids that observed artifact. HDR brightness and moving-scene quality remain experimental.
+The extra DLSS pass costs GPU time and VRAM; the NR
 model timer continues to measure the model rather than this additional pass.
