@@ -270,7 +270,7 @@ class Config
     CustomOptional<int> DlssNrPrivateUpscaler { 0 };
     // Legacy INI alias: with RunBeforeSR, enables the same private SR edit path as DeferredDLSS.
     CustomOptional<bool> DlssNrResidualAcrossRr { false };
-    // Retained for INI compatibility; accumulation is now owned by the selected private upscaler.
+    // RR residual history blend before private upscaling; v0.7.7 default, clamped to 0.01..1.
     CustomOptional<float> DlssNrResidualAcrossRrBlend { 0.08f };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.

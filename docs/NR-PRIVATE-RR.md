@@ -5,6 +5,11 @@ an independent Ray Reconstruction feature for the encoded residual image. This
 applies to post-upscale and finished-picture residual application. Separate-edit
 placement remains manual; no new setting or helper DLL is required.
 
+For source RR evaluations, the signed NR difference first passes through the v0.7.7
+motion-reprojected accumulator (default 8% new contribution). The accumulated edit is
+encoded using the existing carrier and enlarged by the private upscaler. See
+[residual accumulation](RESIDUAL-ACROSS-RR.md) for reset, memory and temporal limitations.
+
 The pre-upscale seam snapshots diffuse/specular albedo, normals, roughness,
 reflection motion and hit-distance guides, offsets, and camera matrices. Private
 RR receives the encoded residual as colour and its own output and history. It is

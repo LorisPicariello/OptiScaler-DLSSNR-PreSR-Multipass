@@ -244,6 +244,9 @@ struct DlssNr_Dx12::State
             ID3D12Resource *edited = nullptr, *residualInput = nullptr, *residualOutput = nullptr, *clean = nullptr,
                            *composed = nullptr, *exposure = nullptr, *readback = nullptr;
             ID3D12QueryHeap* queries = nullptr;
+            ID3D12Resource* accumulatedEdit[2] {};
+            unsigned accumulatedIndex = 0;
+            bool accumulationReadable = false, accumulationValid = false;
             volatile UINT64* completed = nullptr;
             bool occupied[MarkerCount] {};
             unsigned nextMarker = 0, lastMarker = 0;
@@ -266,6 +269,8 @@ struct DlssNr_Dx12::State
                 for (auto* r : { edited, residualInput, residualOutput, clean, composed, exposure, readback })
                     if (r)
                         r->Release();
+                for (auto* r : accumulatedEdit)
+                    if (r) r->Release();
                 if (queries)
                     queries->Release();
                 if (queue)
