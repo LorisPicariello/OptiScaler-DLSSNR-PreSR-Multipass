@@ -1081,7 +1081,9 @@ void RenderMenu(Config* config, float menuResScale)
             view.route = before ? PipelineUi::Route::Before : PipelineUi::Route::After;
 
         static PipelineUi::Section selected = PipelineUi::Section::Placement;
+        ImGui::Separator();
         PipelineUi::Draw(view, selected);
+        ImGui::Separator();
         ImGui::Spacing();
         RenderStatus(config, menuResScale);
         ImGui::SeparatorText(PipelineUi::SectionName(selected));
