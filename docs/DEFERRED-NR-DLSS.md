@@ -1,19 +1,20 @@
 # Generate NR before SR; apply its contribution after SR
 
-Experimental third placement mode. The contribution upscaler is **NVIDIA DLSS Super Resolution**,
-not a spatial filter, FSR or XeSS. The game's selected main upscaler is not changed automatically;
-select DLSS in the game/OptiScaler as well for a DLSS-on-both-branches comparison.
+Experimental third placement mode. The private contribution upscaler can use **DLSS (default),
+FSR 2.2, the installed FidelityFX upscaling runtime, or XeSS**. It has its own context and history;
+selecting it never changes the game's main upscaler.
 
 ## Enable
 
 Use v0.7.0 or a newer build containing this change (not v0.6.2). Under **DLSS Neural Rendering**, enable
-**Generate before SR, apply after SR (DLSS)**. It overrides, but does not erase, the existing
+**Generate before SR, apply after SR**, then choose **Private NR upscaler**. It overrides, but does not erase, the existing
 **Apply before Super Resolution** checkbox. Or configure:
 
 ```ini
 [DlssNr]
 Enabled=true
 DeferredDLSS=true
+PrivateUpscaler=0
 WorkingScale=1.0
 Passes=1
 ```
@@ -21,13 +22,23 @@ Passes=1
 Keep **Apply model** on; turn off frame hold, debug/compare views and skin-mask preview. For a first
 comparison keep FG and RR off and use the same model profile, exposure and strengths. Model resolution
 is relative to the active render raster, not final output: 100% for a 1080p input runs NR at 1080p.
-Existing per-pass controls remain effective. The menu reports the private DLSS path separately.
+Existing per-pass controls remain effective. The menu reports the private SR path separately.
+
+`PrivateUpscaler`: `0` = DLSS, `1` = built-in FSR 2.2, `2` = FidelityFX, `3` = XeSS.
+Missing, `auto` and invalid values preserve the DLSS default. `DeferredDLSS` keeps its legacy key name.
+FidelityFX uses the provider selected by its loaded runtime for the device, independently of the
+main pass's provider override. This does not guarantee FSR4 availability. XeSS selects a quality
+mode whose supported input range contains the actual carrier dimensions; unsupported sizes fail
+cleanly. No sharpening, automatic exposure, game masks or automatic backend fallback are applied.
+The same selector applies when generating before SR and applying to the finished picture on D3D12
+or its D3D11 bridge. It does not change native Vulkan or the separate RR residual accumulator.
 
 Deferred processing evaluates NR on every rendered frame.
 
-Requires your own working NVIDIA DLSS SR runtime and NVIDIA NR runtime. None is redistributed with
-this change. GPU/runtime support is determined by actual private DLSS creation/evaluation, not a GPU
-series whitelist. This mode is on the D3D12 seam, including the existing D3D11/Vulkan-to-D3D12 bridges.
+Requires the NVIDIA NR runtime and support for the selected private upscaler. FSR 2.2 reuses the
+already-linked library; DLSS, FidelityFX and XeSS reuse OptiScaler's runtime loading infrastructure.
+Changing the private upscaler does not remove NR's own hardware/runtime requirements. This mode is
+on the D3D12 seam, including the existing D3D11/Vulkan-to-D3D12 bridges.
 Native Vulkan skips NR with a diagnostic rather than silently substituting a different placement.
 Native RR retains its existing separate post-RR route; this experiment never edits RR's noisy inputs.
 
@@ -38,15 +49,17 @@ Native RR retains its existing separate post-RR route; this experiment never edi
    difference includes the existing intensity/colour/skin controls; they aren't applied twice.
 3. Encode `d = (NR-composed - original) / preExposure` as `0.5 + 0.5*d/(1+abs(d))` into an RGBA16F
    carrier. Neutral grey means zero change; values below grey carry darkening, above grey brightening.
-4. Let the game's SR operate on the untouched colour. Then run a private DLSS SR feature on the carrier,
+4. Let the game's SR operate on the untouched colour. Then run the selected private SR backend on the carrier,
    using separately allocated parameters and history, copied jitter/motion/depth data and unit exposure.
-   Calls go directly to the NVIDIA runtime, not back through OptiScaler's interception layer.
+   Calls use the existing runtime proxies or linked FSR2 API, bypassing game-facing feature wrappers.
+   The NR-local adapter owns input translation and restores the game's guide resource states. FSR
+   camera guides are copied before main SR; missing guides use OptiScaler's existing camera defaults.
 5. Decode the enlarged carrier and add the signed edit to a copy of the clean final-resolution raster,
-   preserving its alpha. Copy back only after successful DLSS evaluation and composition.
+   preserving its alpha. Copy back only after successful private SR evaluation and composition.
 
 This is not a separate physical lighting or shadow buffer. NR returns an edited RGB image; the layer
 is inferred from its difference to the original. The signed compression is deliberately experimental.
-DLSS sees biased/compressed data rather than natural colour and may smooth, distort or temporally
+The private upscaler sees biased/compressed data rather than natural colour and may smooth, distort or temporally
 destabilize it. FP16 carrier precision and the nonlinear inverse can amplify errors. The inverse is
 clamped to signed magnitude 0.999 before decoding (about 999 times pre-exposure); this prevents poles,
 but does not guarantee desirable brightness. Negative final RGB is clamped to zero. No promise of
@@ -58,7 +71,7 @@ matching full-resolution NR or restoring the reported gun-rack shadows is made.
   or unmatched before/after calls retain the clean main-SR result. No alternative residual upscaler runs.
 - Private creation and evaluation are separated by a submission epoch. Camera cuts, disabled/missed
   frames and generation changes reset private history. Main-game parameters/handles are never edited.
-- Resolution/format/device/queue changes create a new generation. Retired histories, shaders and buffers
+- Backend/resolution/format/device/queue changes create a new generation. Retired histories, shaders and buffers
   are released only after the last recorded GPU timestamp completion marker is visible. Completion slots
   also limit outstanding work; retired generations are bounded, with clean-frame fallback under backlog.
 - Only one upscale per submission epoch and a known same-device direct queue are supported. Multi-view,
@@ -66,10 +79,18 @@ matching full-resolution NR or restoring the reported gun-rack shadows is made.
 - If GPU work cannot be confirmed complete at shutdown, its generation is retained for process teardown
   instead of releasing in-flight resources. A private runtime failure latches for its generation; restart
   the game to retry reliably. Turning the option off restores the selected existing placement.
-- NR's existing GPU timer measures NR work, **not** the extra DLSS pass and final-resolution copies/
+- NR's existing GPU timer measures NR work, **not** the extra private SR pass and final-resolution copies/
   composition. Compare total frame time; this mode costs more than ordinary pre-SR NR and uses more VRAM.
 
 ## Validation
+
+- Private backend extension: Release x64 build passed. A headless hardware harness included the actual
+  NR adapter with only loader/config/parameter dependency seams. FSR 2.2, FidelityFX and XeSS each
+  created two live contexts and evaluated 1080p-to-4K neutral/signed carriers across eight frames.
+  All returned exact band-centre values of `0.5` and `0.25/0.5/0.75`. Guide textures starting in UAV
+  state exercised transition/restoration, and missing-depth evaluation was rejected. The D3D12 debug
+  layer was unavailable; checks used API results, GPU fences and output readback. This verifies the
+  adapter with real upscalers, not in-game scheduling, motion quality or OptiScaler's runtime loading.
 
 - Shared HLSL WARP smoke tests: signed shadow/brightening roundtrip, neutral identity, alpha preservation,
   non-finite/overshoot guards and fixed unit exposure passed; existing skin-control tests also passed.

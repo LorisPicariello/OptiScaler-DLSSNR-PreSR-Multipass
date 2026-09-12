@@ -324,6 +324,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrFinishedPicture.set_from_config(readBool("DlssNr", "FinishedPicture"));
             DlssNrHdrTransfer.set_from_config(readBool("DlssNr", "HdrTransfer"));
             DlssNrDeferredDlss.set_from_config(readBool("DlssNr", "DeferredDLSS"));
+            DlssNrPrivateUpscaler.set_from_config(readInt("DlssNr", "PrivateUpscaler"));
             DlssNrResidualAcrossRr.set_from_config(readBool("DlssNr", "ResidualAcrossRR"));
             DlssNrResidualAcrossRrBlend.set_from_config(readFloat("DlssNr", "ResidualAcrossRRBlend"));
             DlssNrToggleKey.set_from_config(readInt("DlssNr", "ToggleKey"));
@@ -1247,6 +1248,8 @@ bool Config::SaveIni()
                  GetBoolValue(Instance()->DlssNrRunBeforeSr.value_for_config()).c_str());
     ini.SetValue("DlssNr", "DeferredDLSS",
                  GetBoolValue(Instance()->DlssNrDeferredDlss.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "PrivateUpscaler",
+                 GetIntValue(Instance()->DlssNrPrivateUpscaler.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ResidualAcrossRR",
                  GetBoolValue(Instance()->DlssNrResidualAcrossRr.value_for_config()).c_str());
     ini.SetValue("DlssNr", "ResidualAcrossRRBlend",

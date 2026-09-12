@@ -263,9 +263,11 @@ class Config
     CustomOptional<bool> DlssNrFinishedPicture { false };
     // Fit the scene-to-finished HDR luminance response for early-generated residuals. Opt-in.
     CustomOptional<bool> DlssNrHdrTransfer { false };
-    // Generate NR before SR, upscale its signed contribution with a private DLSS feature,
+    // Generate NR before SR, upscale its signed contribution with a private SR feature,
     // and apply it after the game's upscaler. Takes precedence over RunBeforeSR; opt-in.
     CustomOptional<bool> DlssNrDeferredDlss { false };
+    // Private carrier only: 0 DLSS (legacy default), 1 FSR 2.2, 2 FidelityFX runtime, 3 XeSS.
+    CustomOptional<int> DlssNrPrivateUpscaler { 0 };
     // Experimental: with RunBeforeSR and the game's Ray Reconstruction both on, run NR before SR
     // but leave the colour input untouched, then add the model's edit back onto the RR+SR output
     // so it survives RR's denoise. v2 carries the edit as an MV-reprojected temporal accumulator

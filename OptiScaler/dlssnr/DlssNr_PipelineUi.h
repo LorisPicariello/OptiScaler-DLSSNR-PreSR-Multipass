@@ -32,6 +32,7 @@ struct View
     bool enabled = true;
     bool rayReconstruction = false;
     bool applyModel = true;
+    const char* privateUpscaler = "DLSS";
     unsigned int passes = 1;
     int scalePercent = 100;
 };
@@ -164,7 +165,8 @@ inline void Draw(const View& view, Section& selected)
         // Only a separately carried edit branches. Both paths reunite at its application point.
         const int prep = prepare(-1, 1), nr = model(-1, 2);
         const int edit = add(-1, 3, view.route == Route::AcrossRr ? "Accumulate NR edit" : "Upscale NR edit",
-                             view.route == Route::AcrossRr ? "Motion-guided residual" : "Separate DLSS pass");
+                             view.route == Route::AcrossRr ? "Motion-guided residual"
+                                                          : std::string("Separate ") + view.privateUpscaler + " pass");
         int game = upscale(1, 1);
         connect(input, prep);
         connect(prep, nr);

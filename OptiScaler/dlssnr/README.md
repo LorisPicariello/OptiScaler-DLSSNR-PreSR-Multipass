@@ -49,7 +49,7 @@ has been submitted.
   command-list, submission and swapchain hooks. Those hooks select a registered, owned shader
   instance rather than a separate global NR pipeline.
 - `DeferredDLSS` generates NR's signed contribution before SR, upscales that contribution with a
-  private DLSS feature, then composes it after the game's upscaler. It takes precedence over ordinary
+  private SR context (`PrivateUpscaler`: DLSS, FSR 2.2, FidelityFX or XeSS), then composes it after the game's upscaler. It takes precedence over ordinary
   placement on supported SR paths. See `docs/DEFERRED-NR-DLSS.md`.
 - `ResidualAcrossRR` with `RunBeforeSR` preserves RR's original colour input and carries NR's edit
   across RR+SR using a reprojected residual history. Deferred processing evaluates NR on every

@@ -15,6 +15,7 @@
 
 #include "DlssNr_Dx12.h"
 #include "DlssNr_ActiveColor.h"
+#include "DlssNr_Upscaler_Dx12.h"
 #include "DlssNr_Guides.h"
 #include "DlssNr_SeamClock.h"
 
@@ -1202,6 +1203,9 @@ struct DlssNr_Dx12::State
             bool everRecorded = false, smallReadable = false, reset = true, failed = false;
             NVSDK_NGX_Parameter* parameters = nullptr;
             NVSDK_NGX_Handle* feature = nullptr;
+            DlssNr::PrivateUpscaler backend = DlssNr::PrivateUpscaler::DLSS;
+            std::unique_ptr<NVNGX_Parameters> localParameters;
+            std::unique_ptr<DlssNr::PrivateUpscalerDx12> alternative;
             unsigned long long createEpoch = 0;
             unsigned long long lastBeginEpoch = 0;
             bool began = false;
@@ -1209,9 +1213,10 @@ struct DlssNr_Dx12::State
             bool Idle() const { return !everRecorded || completed[lastMarker] != 0; }
             ~Generation()
             {
+                alternative.reset(); // Generation completion markers protect backend histories too.
                 if (feature && NVNGXProxy::D3D12_ReleaseFeature())
                     NVNGXProxy::D3D12_ReleaseFeature()(feature);
-                if (parameters && NVNGXProxy::D3D12_DestroyParameters())
+                if (parameters && !localParameters && NVNGXProxy::D3D12_DestroyParameters())
                     NVNGXProxy::D3D12_DestroyParameters()(parameters);
                 if (readback && completed)
                     readback->Unmap(0, nullptr);
@@ -1422,7 +1427,9 @@ struct DlssNr_Dx12::State
                                                  : UInt(source, NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags)) &
                              (NVSDK_NGX_DLSS_Feature_Flags_DepthInverted | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
                               NVSDK_NGX_DLSS_Feature_Flags_MVJittered);
-            if (current && (current->device != device || current->queue != ownerQueue || current->w != active->width ||
+            const auto backend = DlssNr::GetPrivateUpscaler(cfg.DlssNrPrivateUpscaler.value_or_default());
+            if (current && (current->backend != backend || current->device != device || current->queue != ownerQueue ||
+                            current->w != active->width ||
                             current->h != active->height || current->outW != outDesc.Width ||
                             current->outH != outDesc.Height || current->inputFormat != inDesc.Format ||
                             current->outputFormat != outDesc.Format || current->flags != flags))
@@ -1446,6 +1453,7 @@ struct DlssNr_Dx12::State
                 current->inputFormat = inDesc.Format;
                 current->outputFormat = outDesc.Format;
                 current->flags = flags;
+                current->backend = backend;
                 if (!Allocate(*current))
                 {
                     current->failed = true;
@@ -1474,10 +1482,15 @@ struct DlssNr_Dx12::State
                 Say("waiting for GPU completion slots; clean SR frame retained");
                 return;
             }
-            if (!g.feature)
+            if (!g.feature && !g.alternative)
             {
                 ScopedNrStateEnvelope envelope(cmd);
-                if (!NVNGXProxy::InitDx12(g.device) || !NVNGXProxy::D3D12_AllocateParameters() ||
+                if (g.backend != DlssNr::PrivateUpscaler::DLSS)
+                {
+                    g.localParameters = std::make_unique<NVNGX_Parameters>(API::DX12, false);
+                    g.parameters = g.localParameters.get();
+                }
+                else if (!NVNGXProxy::InitDx12(g.device) || !NVNGXProxy::D3D12_AllocateParameters() ||
                     !NVNGXProxy::D3D12_DestroyParameters() || !NVNGXProxy::D3D12_CreateFeature() ||
                     !NVNGXProxy::D3D12_EvaluateFeature() || !NVNGXProxy::D3D12_ReleaseFeature() ||
                     NVNGXProxy::D3D12_AllocateParameters()(&g.parameters) != NVSDK_NGX_Result_Success || !g.parameters)
@@ -1498,13 +1511,27 @@ struct DlssNr_Dx12::State
                 // LDR biased carrier, constant unit exposure, no auto-exposure/sharpening. No main-game presets
                 // or feature handle are overwritten. NGX is called directly, bypassing OptiScaler's NR hooks.
                 p->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, g.flags);
-                const auto result =
-                    NVNGXProxy::D3D12_CreateFeature()(cmd, NVSDK_NGX_Feature_SuperSampling, p, &g.feature);
-                if (result != NVSDK_NGX_Result_Success || !g.feature)
+                if (g.backend == DlssNr::PrivateUpscaler::DLSS)
                 {
-                    g.failed = true;
-                    Say("private DLSS creation failed: " + std::to_string((unsigned) result));
-                    return;
+                    const auto result =
+                        NVNGXProxy::D3D12_CreateFeature()(cmd, NVSDK_NGX_Feature_SuperSampling, p, &g.feature);
+                    if (result != NVSDK_NGX_Result_Success || !g.feature)
+                    {
+                        g.failed = true;
+                        Say("private DLSS creation failed: " + std::to_string((unsigned) result));
+                        return;
+                    }
+                }
+                else
+                {
+                    g.alternative = std::make_unique<DlssNr::PrivateUpscalerDx12>(g.backend);
+                    if (!g.alternative->Init(g.device, p))
+                    {
+                        g.failed = true;
+                        Say(std::string("private ") + DlssNr::PrivateUpscalerName(g.backend) +
+                            " creation failed (runtime/device/input size); clean SR frame retained");
+                        return;
+                    }
                 }
                 DlssNrConstants unit {};
                 unit.Mode = DlssNrMode_UnitExposure;
@@ -1519,7 +1546,8 @@ struct DlssNr_Dx12::State
                 owner.Barrier(cmd, g.exposure, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 g.createEpoch = submittedEpoch;
-                Say("private DLSS created; waiting for a later submission epoch");
+                Say(std::string("private ") + DlssNr::PrivateUpscalerName(g.backend) +
+                    " created; waiting for a later submission epoch");
                 return;
             }
             // Synthetic seam ticks cannot prove that a feature's creation commands were submitted.
@@ -1610,6 +1638,8 @@ struct DlssNr_Dx12::State
                     p->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
                     p->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
                     p->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
+                    if (g.alternative)
+                        DlssNr::PrivateUpscalerDx12::CopyCamera(source, p, g.flags, g.outW, g.outH);
                     pending = { cmd, source, output, frame.PreExposure };
                     LOG_DEBUG("DLSS-NR deferred: Before armed epoch {} preExp {:.4f} reset-carried {}", epoch,
                               frame.PreExposure, frame.Reset);
@@ -1652,11 +1682,15 @@ struct DlssNr_Dx12::State
                 return;
             }
             ScopedNrStateEnvelope envelope(cmd);
-            const auto result = NVNGXProxy::D3D12_EvaluateFeature()(cmd, g.feature, g.parameters, nullptr);
+            const auto result = g.alternative
+                ? (g.alternative->Evaluate(cmd, g.parameters) ? NVSDK_NGX_Result_Success
+                                                            : NVSDK_NGX_Result_FAIL_PlatformError)
+                : NVNGXProxy::D3D12_EvaluateFeature()(cmd, g.feature, g.parameters, nullptr);
             if (result != NVSDK_NGX_Result_Success)
             {
                 g.failed = true;
-                Say("private DLSS evaluation failed: " + std::to_string((unsigned) result));
+                Say(std::string("private ") + DlssNr::PrivateUpscalerName(g.backend) +
+                    " evaluation failed: " + std::to_string((unsigned) result));
                 return;
             }
             LOG_TRACE("DLSS-NR deferred: applied current-frame contribution at epoch {} (reset {})", epoch, g.reset);
@@ -1703,7 +1737,8 @@ struct DlssNr_Dx12::State
                 owner.Barrier(cmd, pair.output, D3D12_RESOURCE_STATE_COPY_DEST, arrival);
                 owner.Barrier(cmd, g.composed, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 Say("running: " + std::to_string(g.w) + "x" + std::to_string(g.h) +
-                    " contribution -> private DLSS -> " + std::to_string(g.outW) + "x" + std::to_string(g.outH) +
+                    " contribution -> private " + DlssNr::PrivateUpscalerName(g.backend) + " -> " +
+                    std::to_string(g.outW) + "x" + std::to_string(g.outH) +
                     "; applied after SR");
             }
             else

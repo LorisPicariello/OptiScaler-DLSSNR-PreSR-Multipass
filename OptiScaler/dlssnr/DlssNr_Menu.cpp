@@ -5,6 +5,7 @@
 #include "DlssNr.h"
 #include "DlssNr_ExposureScan.h"
 #include "DlssNr_PipelineUi.h"
+#include "DlssNr_Upscaler.h"
 
 #include <Config.h>
 #include <menu/menu_common.h>
@@ -161,7 +162,7 @@ static void RenderPlacement(Config* config, float menuResScale)
             ImGui::TextWrapped("Generate before / apply after is unavailable with RR. Generate model before upscale "
                                "controls NR placement.");
         else if (deferredDlss)
-            ImGui::TextWrapped("Residual DLSS: %s", DlssNr::DeferredDlssStatus().c_str());
+            ImGui::TextWrapped("Private SR: %s", DlssNr::DeferredDlssStatus().c_str());
     }
     else if (beforeSr)
         ImGui::TextWrapped("Pre-SR changes: %s", DlssNr::DeferredDlssStatus().c_str());
@@ -1055,7 +1056,7 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::SameLine(toggleRight);
         bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
         ImGui::BeginDisabled(finished);
-        if (PipelineUi::CheckboxWrapped("Generate before SR, apply after SR (DLSS)", &deferredDlss, toggleWidth))
+        if (PipelineUi::CheckboxWrapped("Generate before SR, apply after SR", &deferredDlss, toggleWidth))
             config->DlssNrDeferredDlss = deferredDlss;
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -1063,7 +1064,20 @@ void RenderMenu(Config* config, float menuResScale)
                                       : "Generate early, upscale the edit with the private backend, then apply it after SR.");
         ImGui::Spacing();
 
+        const auto privateFeature = State::Instance().currentFeature;
+        const bool nativePrivateVk =
+            privateFeature && privateFeature->Api() == API::Vulkan && !privateFeature->IsWithDx12();
+        if (!rayReconstruction && !nativePrivateVk &&
+            (deferredDlss || (finished && config->DlssNrRunBeforeSr.value_or_default())))
+        {
+            int backend = (int) GetPrivateUpscaler(config->DlssNrPrivateUpscaler.value_or_default());
+            if (ImGui::Combo("Private NR upscaler", &backend, "DLSS\0FSR 2.2\0FSR (FidelityFX)\0XeSS\0"))
+                config->DlssNrPrivateUpscaler = backend;
+            HelpMarker("Upscales the NR edit. FSR (FidelityFX) and XeSS need their runtimes.");
+        }
+
         PipelineUi::View view;
+        view.privateUpscaler = PrivateUpscalerName(GetPrivateUpscaler(config->DlssNrPrivateUpscaler.value_or_default()));
         view.enabled = enabled;
         view.applyModel = config->DlssNrApplyModel.value_or_default();
         view.passes = config->DlssNrPasses.value_or_default();
