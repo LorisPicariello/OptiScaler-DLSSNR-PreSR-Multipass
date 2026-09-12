@@ -1,104 +1,53 @@
 # Neural Rendering implementation
 
-This module drives NVIDIA's Neural Rendering model (`nvngx_dlssnr.dll`, NGX feature 18) over
-frames OptiScaler already handles. The runtime is supplied separately; it is not redistributed.
-Model calls use the NGX core installed with the NVIDIA driver. See the
-[installation guide](../../INSTALL-DLSSNR.md) and [attribution](../../docs/CREDITS.md).
+NR calls NVIDIA feature 18 through the installed driver's NGX core. Users supply `nvngx_dlssnr.dll`; there is no NR helper DLL. See [installation](../../INSTALL-DLSSNR.md) and [credits](../../docs/CREDITS.md).
 
-## Ownership and integration
+## Ownership and dispatch
 
-`IFeature_Dx12` and `IFeature_Vk` own their NR shader/model instances. GPU resources are created
-lazily on first use. NR is off by default. Vulkan must have NR enabled before device/swapchain
-creation to prepare optional extensions and transfer usage; enabling it later may need a restart.
+`IFeature_Dx12` and `IFeature_Vk` own model contexts, scratch/history, captures and timers. Resources are lazy; NR defaults off. Vulkan needs NR enabled before device/swapchain creation to prepare extensions and transfer usage.
 
-The NR pipeline adapters receive explicit color, depth, motion, output and frame metadata.
-Shared shader pipelines own only generic ordering and dispatch. D3D11-to-D3D12 and
-Vulkan-to-D3D12 bridges reuse D3D12 NR; native Vulkan owns a separate implementation.
-Shared codec constants live in `DlssNr_Common.h`.
+Adapters pass explicit colour, depth, motion, output and frame metadata into shared pipeline ordering. D3D11/Vulkan bridges reuse D3D12 NR; native Vulkan owns its implementation. Hooks select live owners; menus exchange values/requests without holding GPU resources.
 
-Model contexts, scratch textures, history, captures and timing belong to the shader instance.
-Finished-picture and deferred schedules retain that ownership. Global hook entry points select
-live owners; they do not create another rendering pipeline. The menu reads value-only snapshots
-and issues control requests without retaining GPU resources.
+`RunBeforeSR` redirects owned colour before SR/RR+SR, then restores game bindings and resource states. Invalid pre-colour rectangles fall back after SR where valid. Colour must start at origin zero; depth/motion have independent regions.
 
-`RunBeforeSR` selects owned color scratch before SR or combined RR+SR; post-SR is the default.
-The adapter restores game parameter bindings and incoming resource states. Active color
-rectangles must be origin-zero; depth/motion metadata permits independent subrect origins.
-Unsupported pre-SR shapes select post-SR fallback where valid. See
-[placement and multipass](design/pre-sr-multipass.md).
-
-`FinishedPicture` captures guides at the upscaler seam and applies at presentation. Native
-Vulkan supports its own finished-picture route under the constraints in
-[NR-FINISHED-BRIDGES.md](../../docs/NR-FINISHED-BRIDGES.md).
-`DeferredDLSS` generates a signed edit before SR, processes it through a private DLSS, FSR 2.2,
-FidelityFX or XeSS context, and composes it after the game's SR or RR+SR, or at presentation when `FinishedPicture` is enabled.
-With DLSS selected, native DX12 RR inputs can select a private RR context; other supported
-inputs use private SR. The legacy `ResidualAcrossRR` key aliases this unified route. Source-RR
-frames accumulate the signed edit at input resolution using game motion vectors before private
-upscaling. See [private RR](../../docs/NR-PRIVATE-RR.md). Its backend contract carries
-explicit guide states, dimensions and camera metadata; it does not change the game-facing
-backend factory. Deferred private SR and exposure scanning use D3D12, including its bridges.
-
-**Matched residual + DLSS** is a separate enlargement option for reduced-resolution NR after
-the game's upscaler or on the finished picture. It enlarges the model's matched edit using
-private DLSS SR, then adds it to the full-resolution original. It does not use private RR.
-See [enlargement and supported placements](../../docs/NR-DLSS-ENLARGEMENT.md).
+| Route | Implementation notes |
+| --- | --- |
+| Ordinary pre/post NR | [Placement and independent pass histories](design/pre-sr-multipass.md) |
+| Early generation, late application | [Private edit upscaling](../../docs/DEFERRED-NR-DLSS.md); source RR adds [motion accumulation](../../docs/RESIDUAL-ACROSS-RR.md) |
+| Finished picture | Guides captured at the upscaler seam; [presentation bridges](../../docs/NR-FINISHED-BRIDGES.md) |
+| Reduced post/finished NR | [Matched residual + DLSS](../../docs/NR-DLSS-ENLARGEMENT.md), always private SR |
 
 ## Source map
 
-| Implementation | Responsibility |
+Paths are relative to `OptiScaler/dlssnr` unless prefixed with `shaders/`, which starts at `OptiScaler`.
+
+| Files | Purpose |
 | --- | --- |
-| `DlssNr_Pipeline_Dx12.*`, `DlssNrPipeline_Vk.h` | NR adapters at the upscaler seams |
-| `shaders/dlssnr/DlssNr_Dx12.cpp` | shader dispatch and public per-feature entry points |
-| `DlssNr_Dx12_State.h`, `DlssNr_Dx12_ModelState.h` | private owner and model resource/history state |
-| `DlssNr_Dx12_Models.cpp`, `DlssNr_Dx12_Resources.cpp` | creation, scratch allocation and retirement |
-| `DlssNr_Dx12_Run.cpp`, `DlssNr_Dx12_Encode.cpp` | frame orchestration, encoding and resolve constants |
-| `DlssNr_Dx12_Evaluate.cpp` | NGX parameter adaptation and across-RR application |
-| `DlssNr_Dx12_Exposure.cpp`, `DlssNr_Dx12_Hold.cpp` | exposure/calibration and frozen inputs |
-| `DlssNr_Dx12_DeferredSr.cpp`, `DlssNr_Upscaler_Dx12.cpp` | private SR generations and runtime adapters |
-| `DlssNr_Dx12_Late.cpp`, `DlssNr_Dx12_FinishedQueue.cpp`, `DlssNr_Dx12_FinishedCompose.cpp` | guide capture, submission tracking and presentation |
-| `DlssNrFeature_Vk.cpp`, `_Model.cpp`, `_Resources.cpp` | native Vulkan frames, model lifecycle and image/readback resources |
-| `DlssNr_ExposureScan.cpp`, `DlssNr_ExposureReadback.cpp`, `DlssNr_ExposureAnchors.cpp` | candidate discovery, GPU sampling and calibration persistence |
+| `DlssNr_Pipeline_Dx12.*`, `DlssNrPipeline_Vk.h` | Upscaler adapters |
+| `DlssNrFeature_Vk*`, `DlssNrFinished_Vk*` | Native Vulkan model/resources/presentation |
+| `DlssNr_Exposure*` | Discovery, readback and calibration |
+| `DlssNr_Menu*`, `DlssNr_PipelineUi.h` | Controls and chart |
+| `shaders/dlssnr/DlssNr_Dx12_{Run,Encode,Evaluate}*` | Frame processing and composition |
+| `shaders/dlssnr/DlssNr_Dx12_{Models,Resources,State,ModelState}*` | Model/resource ownership |
+| `shaders/dlssnr/DlssNr_Dx12_{DeferredSr,Enlarge}*`, `shaders/dlssnr/DlssNr_Upscaler_Dx12*` | Private upscaling |
+| `shaders/dlssnr/DlssNr_Dx12_{Late,FinishedQueue,FinishedCompose}*` | Capture, submission and presentation |
+| `shaders/dlssnr/DlssNr_Dx12_{Exposure,Hold}*` | Exposure and held inputs |
+| `shaders/dlssnr/DlssNr_Common.h`, `shaders/dlssnr/precompile/*.hlsl` | Shared codec contract and shaders |
 
-The `DlssNr_Dx12_*` and private-upscaler files are under `shaders/dlssnr`.
-These are real C++ implementation units sharing private declarations, not implementation includes.
-The frame orchestration, owner declarations and native Vulkan presentation remain cohesive files
-slightly above the approximate 500-line target. Generated shader arrays are exempt. The main HLSL
-codec remains one cohesive kernel/constant-buffer contract shared by DXIL and SPIR-V; splitting it
-solely to reduce line count would add shader-build dependencies without changing ownership.
+D3D12 completion markers protect retirement; CPU frame counts only pair logical frames. Replaced owners stay registered until recordings and GPU work finish. Unresolved teardown work remains alive for process exit. Vulkan drains before resource replacement and separates creation/evaluation with events. See [GPU lifetime](../../docs/NR-GPU-RETIREMENT.md).
 
-## GPU lifetime
-
-D3D12 records completion markers for NR-owned GPU work. Texture/model retirement waits for
-completion and discarded command recordings are tracked separately. CPU frame counts only
-coordinate logical frames. Replaced owners remain registered until their recordings and GPU
-work finish, then are reclaimed. Unresolved work at final teardown is retained rather than
-freeing resources the GPU may use. Deferred generations and
-finished-picture slots retain their own completion markers/fences.
-
-Vulkan drains the device before replacing model resources or filter pipelines. Creation events
-separate NGX uploads from evaluation. Per-feature ownership does not establish unrestricted
-multi-device support in the installed NGX core. The exposure scanner accepts one device until
-GPU-safe shutdown and rejects foreign-device candidates.
+The exposure scanner accepts one device until safe shutdown; per-feature ownership does not imply unrestricted multi-device NGX support.
 
 ## Validation
 
-From a Visual Studio developer PowerShell at the repository root:
+From an x64 Visual Studio developer PowerShell:
 
 ```powershell
 msbuild OptiScaler.sln /m /p:Configuration=Release /p:Platform=x64 /p:PostBuildEventUseInBuild=false
 ./tests/dlssnr_proxy/run.ps1
 ./tests/run_nr_gpu_lifetime.ps1
+./tests/run_nr_pipeline_capture.ps1
 ./tests/run_nr_private_upscaler_smoke.ps1
 ```
 
-The proxy regressions exercise production adapters using a mock NGX backend and the SDK parameter
-interface. The private-upscaler runner documents its runtime-loader substitutions and installed
-runtime requirements in [its test notes](../../tests/nr_private_upscaler_smoke.md). Additional
-CPU/WARP and Vulkan smoke sources cover guide rectangles, padded color, residual/skin composition,
-HDR transfer, pairing and presentation. Synthetic texture tests establish those specific contracts,
-not moving-scene quality or full game/driver stability.
-
-Shader edits must regenerate both DXIL and SPIR-V arrays from the same constant-buffer layout.
-Keep all `.cpp` files using `pch.h` as their first non-comment include, as required by
-[CONTRIBUTING.md](../../CONTRIBUTING.md).
+Shader edits must regenerate DX12 and Vulkan binaries/headers with matching constants and stable operation numbers. C++ units include `pch.h` first per [CONTRIBUTING.md](../../CONTRIBUTING.md). See [runtime test boundaries](../../tests/nr_private_upscaler_smoke.md) and [game results](../../docs/NR-UPSTREAM-REVIEW.md).

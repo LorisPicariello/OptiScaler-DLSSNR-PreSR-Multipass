@@ -1,126 +1,35 @@
-# Skin controls and Onimusha compatibility changes
+# NR controls and compatibility
 
-## Automatic mask versus skin colour controls
+## Skin controls
 
-`AutoMask` is NVIDIA's internal automatic-mask input. It was already sent during feature creation
-and evaluation, and changing an active pass's setting already rebuilt that feature. `SkinStructure=-1`
-follows `LocalStructure`, so the default does not request separate skin detail strength. To compare,
-try `AutoMask=true`, `LocalStructure=1`, `SkinStructure=0` on a still character close-up.
-`SkinStructure=0` is not a switch that removes all skin lighting/colour changes.
+`AutoMask` requests NVIDIA's automatic mask. An explicit `DLSSNR.ControlMask` overrides it, so reusable parameter tables clear stale entries. See the [independent mask probes](https://github.com/kibblerz/DLSS5-Reshade-AIO/blob/main/lab/PRIVATE-CONTRACT-FINDINGS.md#controlmask). `SkinStructure=-1` follows `LocalStructure`; setting it to 0 does not disable every skin lighting/colour change.
 
-An explicit `DLSSNR.ControlMask` overrides the automatic mask; a stale entry in a reusable
-parameter block must not win silently. The earlier direct backend explicitly cleared it.
-This is defensive handling, not confirmation that stale masks caused a particular user's report.
-The ControlMask precedence is also described in [these independent feature-18 probes](https://github.com/kibblerz/DLSS5-Reshade-AIO/blob/main/lab/PRIVATE-CONTRACT-FINDINGS.md#controlmask).
-Logs distinguish parameter-table readback from proof of a visible effect and identify the final
-model pass whose values remain in that table.
+**Skin and environment (final edit)** is a separate, opt-in colour filter, applied once after all model passes on DX12/Vulkan. Its four strengths default to 1. It adds no model pass and does not expose NVIDIA's semantic mask. The preview shows selection in white: warm materials can match, while coloured lighting can hide skin.
 
-The new **Skin and environment (final edit)** section is independent of AutoMask. It has:
-
-- An opt-in **Separate skin / environment controls** switch.
-- **Allow skin tone / colour changes**, a separate on/off switch.
-- Skin and environment sliders for detail/lighting and colour (0..1).
-- A preview showing the colour-based selection in white.
-
-This is an approximate colour-based selection, not a semantic skin/face detector. Wood, sand and
-other warm materials can match; unusual or strongly coloured lighting can prevent skin from matching.
-Check the preview before using it. The filter is off by default and all four strengths default to 1,
-so existing setups keep their output. It applies once to the combined NR result, including replace
-mode, on DX12 and native Vulkan. It does not add another neural model pass. Per-pass model sliders
-remain separate; the final filter does not expose the model's private semantic mask.
-
-Colour off preserves hue/chroma in fully selected pixels but allows the lighting slider to change
-brightness. Set skin detail/lighting to 0 as well to restore original pixels where the mask is fully
-white. At soft edges the skin and environment settings blend.
+Colour off preserves hue/chroma in fully selected pixels; lighting can still change brightness. Set detail/lighting to 0 too to restore those pixels completely. Soft edges blend skin/environment settings. `tests/nr_skin_shader_smoke.cpp` checks identity, bypass, separation, preview and colour preservation on WARP; it does not validate NVIDIA's mask.
 
 ## Onimusha: Way of the Sword
 
-Upstream's [issue #22](https://github.com/Dagherbou/OptiScaler_DLSSNR/issues/22) reports NR crashes on
-multiple GPU generations, including during loading. This fork contained the RE Engine compute-state
-quirk for `onimushawots_demo.exe`, but not `onimushawots.exe`. Both now get the same restore/spoofing
-defaults. An explicit `RestoreComputeSignature=false` in an old INI overrides the automatic fix;
-use `auto` or `true` under `[Hotfix]`.
+Both `onimushawots_demo.exe` and `onimushawots.exe` receive the restore/spoofing defaults addressing [reported NR crashes](https://github.com/Dagherbou/OptiScaler_DLSSNR/issues/22). An explicit old `[Hotfix] RestoreComputeSignature=false` overrides them; use `auto` or `true`.
 
-NR's graphics-state envelope previously started after model creation and some early returns. It now
-covers creation, recreation and evaluation. When the required game state cannot be restored, the
-frame is skipped before any NR command recording. These changes target concrete code gaps, but the
-retail game/RTX 30 combination has not been reproduced here, so this is a candidate fix.
-The model context must reject creation errors rather than treating a partially returned handle as usable.
-The removed helper is no longer part of this error-handling path.
+State restoration covers model creation, recreation, evaluation and early returns. NR skips recording when required state cannot be restored and rejects partially returned handles after creation errors. This is a candidate fix: the retail game/RTX 30 case was not reproduced here.
 
-Testing order for an affected machine:
+For a report, verify the loaded proxy was replaced; test one pass with FG off, then loading/fast travel and FSR output separately. Include driver, runtime hash, DLSS version, executable, INI and log. These changes do not establish that every loading crash is fixed.
 
-1. Confirm the active proxy DLL was replaced, not just the unused `OptiScaler.dll` in the folder.
-2. Use the documented RTX 20/30/40 NR runtime, one pass, and disable FG for the first test.
-3. Try DLSS + NR in gameplay and through loading/fast travel. Attach the new log if it still crashes.
-4. Test FSR output separately to isolate the native DLSS path. Enabling DLSS as the game's input
-   and choosing FSR as OptiScaler's output are different settings; state both in a report.
+## BG3 buffer routing
 
-Also report the driver, DLSS DLL version, NR runtime hash, real executable name and INI. Do not assume
-an out-of-memory, resource-lifetime or other loading bug is fixed just because the engine quirk is on.
+NVIDIA's DX11 parameter table accepts bridge DX12 resources through `void*`, but ignores typed `ID3D12Resource*` setters/getters. Post-SR NR previously read an unwritten image; pre-SR colour replacement never reached DLSS. Deferred placement avoided those substitutions.
 
-## Validation
-
-The earlier compatibility build and both DX12 DXIL and Vulkan SPIR-V shader compilation passed.
-That result predates the mandatory driver-dispatch transition and does not validate its full runtime path.
-`tests/nr_skin_shader_smoke.cpp` executes the shared HLSL headlessly using D3D11 WARP:
-disabled/default identity, full bypass, skin/environment separation, mask preview and colour preservation.
-This is shader validation, not an in-game test of NVIDIA's automatic mask.
-
-Build/run from a VS x64 Native Tools prompt at the repository root:
-
-```bat
-cl /nologo /std:c++20 /EHsc tests\nr_skin_shader_smoke.cpp /Fe:x64\nr_skin_shader_smoke.exe /Fo:x64\nr_skin_shader_smoke.obj /link d3d11.lib d3dcompiler.lib
-x64\nr_skin_shader_smoke.exe OptiScaler\shaders\dlssnr\precompile\dlssnr.hlsl
-```
-
-Related backend, resource-lifetime and presentation fixes are listed in [COMPATIBILITY-CHANGES.md](COMPATIBILITY-CHANGES.md).
-# BG3 normal NR buffer routing
-
-BG3's DX11-to-DX12 bridge can retain NVIDIA's DX11 parameter table. That table accepts
-DX12 resources through `void*`, but ignores `Set(name, ID3D12Resource*)` and rejects the
-corresponding typed getter. Normal post-SR NR therefore read an unwritten intermediate
-(black image); normal pre-SR NR's replacement colour never reached DLSS. The deferred
-generate-before/apply-after schedule avoided these substitutions.
-
-The shared DX12 pipeline now preserves the parameter table's supported resource access
-type when redirecting colour/output and restoring temporary bindings. Regression tests
-cover native and bridge tables; the production helpers were also checked against NVIDIA's
-real DX11 table. These checks establish buffer routing, not final in-game image quality.
+The shared pipeline now preserves the table's supported access type when redirecting/restoring resources. Production helpers were checked against mock tables and NVIDIA's real DX11 table.
 
 ## Experimental HDR brightness transfer
 
-With **Apply NR to the finished picture** and **Generate model before upscale** enabled,
-select the chart's **Apply NR edit** stage and enable **Match HDR brightness response
-(experimental)**. `[DlssNr] HdrTransfer=false` is the default. The option is active on the
-DX12 finished-picture path (including the DX11 bridge), with scene-linear input and an HDR10
-or scRGB output. Native Vulkan still does not support the underlying early-generation/late-
-application route. SDR output and non-linear scene input use the existing transfer.
+With early generation and finished-picture application enabled, select **Apply NR edit → Match HDR brightness response (experimental)**. `[DlssNr] HdrTransfer=false` defaults off. It supports scene-linear input with HDR10/scRGB output on DX12 and the DX11 bridge. SDR/nonlinear input uses the existing transfer; native Vulkan lacks this early-to-finished route.
 
-The producer copies the clean SR image into its fence-protected presentation slot. At
-presentation, the finished-colour shader compares 1,024 corresponding samples with the clean
-reference, normalising scene luminance by that frame's pre-exposure. It fits 48 overlapping
-half-stop bins over -12..12 stops, using local regression followed by outlier rejection.
-Small curve textures ping-pong within each reusable GPU slot. Consistent curves are smoothed;
-resets, resize, colour-space changes, large exposure/response changes or stale slots invalidate
-history. There is no CPU readback or additional NR model evaluation.
+At presentation, compare 1,024 samples against a fence-protected clean SR reference, normalized by pre-exposure. Local regression and outlier rejection fit 48 half-stop luminance bins over −12..12 stops. Consistent curves are smoothed; resets, resize, stale slots and major exposure/colour changes invalidate history.
 
-Application estimates `finished + T(edited scene) - T(clean scene)` for luminance and retains
-the existing RGB transfer's chromaticity. Missing coverage, inconsistent fits, non-monotonic
-responses and pixels that disagree with the fit fall back to the existing bounded transfer.
-Neutral residuals preserve the finished image exactly. This is a luminance approximation,
-not recovery of the game's full colour grading, local tone mapping, bloom or HUD composition.
-It assumes the scene's RGB luminance convention matches the existing NR working colour space.
+Application estimates `finished + T(edited scene) - T(clean scene)` for luminance, retaining the existing RGB transfer's chromaticity. Missing, inconsistent or non-monotonic fits fall back to bounded transfer; neutral edits preserve the image. This cannot recover full colour grading, local tone mapping, bloom or HUD composition.
 
-Enabling it adds a full-size clean reference per used in-flight slot, tiny FP32 curve textures,
-a GPU analysis dispatch and extra composition reads. Actual game cost is unmeasured. Turning
-it off avoids the extra recording and releases the optional resources when their slots are
-safely reused or the owner is destroyed. Shader modes 0..5 remain stable; modes 6..9 contain
-the optional fit/application, with matching regenerated DXIL and SPIR-V.
+Cost: a full-size reference per used slot, small curve textures and GPU analysis/composition reads; no CPU readback or extra NR pass. Disabling safely retires optional resources. Shader operations 6–9 leave 0–5 stable.
 
-`tests/nr_finished_color_smoke.cpp` executes the shader on WARP. A known HDR shoulder test
-reduced total absolute luminance error from 603.58 to 9.37 across the selected ramp samples;
-this is synthetic evidence, not an in-game quality claim. Tests also cover flat-scene and
-local mismatch fallback, neutral identity, pre-exposure invariance, history smoothing/reset,
-HDR10 application and the existing HDR/SDR conversion checks. Game-specific colour accuracy,
-rapid lighting changes, HUD contamination and real GPU overhead remain to be tested in-game.
+`tests/nr_finished_color_smoke.cpp` checks HDR/SDR conversion, identity, fallback and history. A synthetic shoulder test reduced summed luminance error from 603.58 to 9.37; game colour accuracy and overhead remain unverified. See [live results](NR-UPSTREAM-REVIEW.md) and [other compatibility fixes](COMPATIBILITY-CHANGES.md).

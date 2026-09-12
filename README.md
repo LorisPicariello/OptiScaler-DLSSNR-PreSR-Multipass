@@ -38,19 +38,14 @@
 
 ## Neural Rendering on this branch
 
-This branch adds experimental DLSS Neural Rendering to OptiScaler's existing upscaler pipelines.
-It supports pre/post-upscale placement, multiple model passes, working-resolution controls,
-reversible colour composition and skin/environment controls. D3D12 also retains finished-picture,
-calibration/exposure and deferred-DLSS/residual composition options. D3D11 and Vulkan bridges reuse
-D3D12 processing; native Vulkan has its own owned shader pipeline.
+Experimental NR adds pre/post-upscale and finished-picture processing, multipass tuning,
+model resolution, HDR/exposure controls and separate edit upscaling. It defaults off and
+uses a separately supplied `nvngx_dlssnr.dll` through the NVIDIA driver; no NR helper DLL.
 
-Neural Rendering is off by default. It uses OptiScaler, your separately supplied `nvngx_dlssnr.dll`,
-and the NGX core installed with the NVIDIA driver. No separate NR helper DLL is supplied or required.
-Focused synthetic tests cover driver adapters, composition and scheduling; full gameplay stability
-and moving-scene visual quality remain subject to runtime validation.
-See the [NR installation guide](INSTALL-DLSSNR.md), [implementation notes](OptiScaler/dlssnr/README.md)
-and [NR credits](docs/CREDITS.md). The upstream download links below describe official OptiScaler;
-they do not imply that these experimental branch features have been merged upstream.
+See [installation](INSTALL-DLSSNR.md), [controls](docs/NR-PIPELINE-UI.md),
+[game tests and limits](docs/NR-UPSTREAM-REVIEW.md), [implementation](OptiScaler/dlssnr/README.md)
+and [credits](docs/CREDITS.md). Official download links refer to upstream OptiScaler;
+these experimental features are proposed separately.
 
 ## About
 

@@ -1,50 +1,19 @@
-# NR resource reclamation
+# NR GPU resource lifetime
 
-The Cyberpunk run on `5089822e` reported up to 34.03 GB of VRAM use and repeated
-`abandoning GPU ownership with unresolved command recordings at teardown` messages.
-NR time rose from approximately 4 ms to 23 ms near the memory peak. This supports
-memory pressure as a contributor to the reported long-session slowdown; it does
-not establish that every allocation in the process belongs to NR.
+A Cyberpunk session reached 34.03 GB VRAM use as NR time rose from roughly 4 to 23 ms. Logs showed unresolved recordings at teardown, supporting memory pressure as a contributor without attributing every allocation to NR.
 
-The correction addresses three ownership gaps:
+Resources retire only after recordings close and submitted fences complete:
 
-- Command lists may be destroyed instead of reset. Each NR lifetime tracker installs
-  a private COM notification on recorded lists. Destruction closes their recordings
-  without retaining or dereferencing the list. Submitted GPU fences still have to complete.
-- Replaced NR owners remain registered for completion/reset notifications until their
-  work is safe to destroy, rather than immediately abandoning the entire instance.
-  NR-owned presentation lists are logically closed at retirement because they cannot
-  be replayed; game-owned lists retain their reset/destruction and completion requirements.
-- Codec-only NR shaders register for queue notifications too. Finished-picture capture
-  commands join the parent's lifetime tracking. Once the parent is drained, discarded
-  private-upscaler generations can be freed even if their GPU timestamp was never written.
-  Submission hooks are installed before any feature-creation recording, not only after
-  the first model becomes ready to evaluate.
+- A private COM notification closes destroyed command-list recordings without retaining/dereferencing the list. Destruction alone does not prove GPU completion.
+- Replaced owners keep receiving notifications. NR-owned presentation lists close at retirement; replayable game lists still require reset/destruction and completion.
+- Codec-only shaders register for submissions; finished-picture captures share parent tracking. Drained parents release discarded private generations even without a written timestamp. Hooks precede feature-creation recording.
 
-Notification iteration uses a stable owner snapshot; destruction is deferred until
-notifications finish. Child codecs may enqueue retirement while their parent is destroyed.
-Failed completion proofs and genuinely unresolved work at process teardown remain retained
-to avoid freeing memory still referenced by GPU commands.
+Notifications use stable owner snapshots and defer destruction. Child retirement is allowed; unresolved teardown work survives until process exit.
 
-The production lifetime WARP test covers 64 destroyed, unsubmitted command lists, destruction
-of a submitted list while its GPU queue is blocked, later reclamation, replay, wrapped
-identities and multiple queues. Proxy regressions and the Release x64 build passed.
-In-game VRAM behaviour over repeated mode changes and an extended session requires user testing.
+## Reentrant destruction
 
-## Reentrant cleanup correction
+A Cyberpunk access violation was traced to retired-vector compaction. Calling NGX destruction inside `std::erase_if` could re-enter hooks and mutate that vector.
 
-The 23:09:47 Cyberpunk crash on 12 September occurred in the installed `8d618db8`
-DLL at RVA `0x2d7ca5`, in the move assignment of `GpuLifetime::Impl::Retired`.
-A diagnostic relink produced an identical `.text` section and a map identifying
-that location. This places the access violation in retired-vector compaction.
+The collector now removes completed callbacks into a separate batch before invoking them. Nested collection is guarded; later batches drain callback-created retirements once. An idle query cannot allow tracker destruction while callbacks are active.
 
-The old collector invoked destruction callbacks inside `std::erase_if`. NGX release
-can re-enter submission/reset hooks or retire additional resources, recursively
-collecting or reallocating that same vector while it is being compacted. A regression
-that retires 64 additional callbacks from one callback fails with the old collector.
-
-The collector now moves completed callbacks into a separate batch and finishes
-vector maintenance before invoking them. A scope guard prevents nested collection,
-and subsequent batches drain resources retired by callbacks exactly once. A nested
-idle query cannot declare the tracker safe to destroy while callbacks are active.
-The updated lifetime regression passes, including the prior fence/replay cases.
+The production WARP regression covers 64 destroyed unsubmitted lists, blocked submitted work, later reclamation, replay, wrapped identities, multiple queues and reentrant retirement of 64 callbacks. The old collector fails that reentrant case. These checks do not prove long-session VRAM stability; see [game limits](NR-UPSTREAM-REVIEW.md).

@@ -1,28 +1,11 @@
-# Pre-SR placement and multipass
+# Placement and multipass
 
-`RunBeforeSR` selects an owned color input before SR, including combined RR+SR. Post-SR is the
-default. Invalid pre-SR active rectangles select the ordinary post-SR fallback where possible.
-Color/output composition requires an origin-zero rectangle; depth and motion have independent
-valid rectangles and origins. See [padded color](../../../docs/PADDED-PRESR.md).
+`RunBeforeSR` edits owned colour before SR or RR+SR; the default is post-upscale. Invalid pre-colour regions fall back afterward where possible. Colour/output require origin-zero rectangles; [depth/motion regions](../../../docs/NR-MOTION-METADATA.md) are independent.
 
-Each layer owns a persistent NGX feature and temporal history. `Passes` selects the count;
-`UnlockPasses` enables additional layers up to the module limit. Later layers inherit the base
-profile unless overridden, with local tone defaulting to zero. A failed extra layer leaves the
-ready contiguous prefix active rather than reusing another layer's temporal history.
+Each pass owns a persistent model and temporal history. Later passes inherit the base profile except local tone, which defaults to zero. `Passes` selects the count; `UnlockPasses` permits advanced counts up to the module limit. A failed extra pass leaves the ready contiguous prefix active.
 
-The codec encodes once. Pass zero reads that immutable base and writes output A. Subsequent
-layers alternate A/B. Composition applies the final answer minus the original base once, so
-color/transfer controls are not compounded across layers.
+Encode once, preserve the original input and alternate model outputs A/B. Compose the final answer against the original once, avoiding compounded colour transforms.
 
-Profile, placement, format and working-size changes rebuild the affected model resources.
-D3D12 GPU markers protect model creation readiness and retirement; logical submission epochs
-coordinate Before/After pairing but do not establish GPU completion. Vulkan uses a creation
-event and drains the device before replacing owned model resources.
+Profile, placement, format and size changes rebuild affected resources. D3D12 markers protect creation and retirement; submission epochs only pair calls. Vulkan uses creation events and drains before replacement.
 
-## Separate edit upscaling, including RR
-
-`DeferredDLSS` runs NR before SR/RR on owned Color and upscales only the edit with an independent
-non-RR backend. It applies the result after the game upscaler, or saves it for presentation when
-`FinishedPicture` is enabled. `RunBeforeSR` plus legacy `ResidualAcrossRR` selects the same route.
-The former temporal accumulator is replaced by the private upscaler's independent history.
-See [private edit upscaling](../../../docs/DEFERRED-NR-DLSS.md).
+`DeferredDLSS` instead upscales a separate edit for post-upscale or finished-picture application. Source RR accumulates that edit using motion vectors before private enlargement. DLSS can use private RR with compatible native guides; other cases use SR. See [private upscaling](../../../docs/DEFERRED-NR-DLSS.md).

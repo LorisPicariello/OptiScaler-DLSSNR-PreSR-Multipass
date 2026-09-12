@@ -34,7 +34,9 @@ $files = @{}
 $files['OptiScaler.dll'] = Join-Path $buildRoot 'OptiScaler.dll'
 foreach ($name in @('OptiScaler.ini', 'setup_windows.bat', 'setup_linux.sh', 'README.md', 'INSTALL-DLSSNR.md', 'LICENSE',
                     'Features.md', 'Config.md', 'Spoofing.md', 'images/gh-sponsor-red.png', 'images/bmac.png',
-                    'OptiScaler/dlssnr/README.md')) {
+                    'CONTRIBUTING.md', 'OptiScaler/dlssnr/README.md', 'tests/nr_private_upscaler_smoke.md',
+                    'OptiScaler/dlssnr/design/frame-hold.md', 'OptiScaler/dlssnr/design/multi-point-anchoring.md',
+                    'OptiScaler/dlssnr/design/pre-sr-multipass.md')) {
     $files[$name] = Join-Path $root $name
 }
 foreach ($name in @('libxess.dll', 'libxess_dx11.dll', 'libxell.dll', 'libxess_fg.dll')) {
@@ -53,7 +55,8 @@ $files['Licenses/RenoDX_ATTRIBUTION.txt'] = Join-Path $root 'Licenses/RenoDX_ATT
 foreach ($name in @('CREDITS.md', 'NR-COMPATIBILITY.md', 'NR-MOTION-METADATA.md', 'NR-PIPELINE-UI.md', 'NR-FINISHED-BRIDGES.md', 'PADDED-PRESR.md',
                     'DEFERRED-NR-DLSS.md', 'RESIDUAL-ACROSS-RR.md', 'COMPATIBILITY-CHANGES.md',
                     'NR-DLSS-ENLARGEMENT.md', 'NR-GPU-RETIREMENT.md', 'NR-NATIVE-STREAMLINE-PRESENT.md',
-                    'NR-PRIVATE-RR.md', 'NR-VULKAN.md', 'NR-PHOTO-DIAGNOSTIC.md')) {
+                    'NR-PRIVATE-RR.md', 'NR-VULKAN.md', 'NR-PHOTO-DIAGNOSTIC.md',
+                    'NR-UPSTREAM-REVIEW.md', 'NR-UPSTREAM-DIFF-INVENTORY.md')) {
     $files["docs/$name"] = Join-Path $root "docs/$name"
 }
 foreach ($entry in $files.GetEnumerator()) {

@@ -1,18 +1,7 @@
 # Frame hold
 
-D3D12 NR can freeze its input while model and composition settings change. Ordinary hold owns
-copies of the input color and required guides, restores the original NGX parameter values after
-evaluation, and leaves the game's original resources owned by the game. The color codec also
-keeps a native color snapshot for repeated composition. Releasing hold resumes live inputs.
+D3D12 hold freezes owned colour, depth, motion, exposure and sampling metadata while model/composition settings change. Original game resources and parameter bindings are preserved. Live exposure sampling stops for the held image; release resumes live input.
 
-The exposure snapshot travels with the held image, so changing light in the running game cannot
-change the held comparison. Live exposure sampling is disabled while using that snapshot.
-Resource shape or placement changes invalidate the held inputs. A reset command list discards
-an unsubmitted hold capture. Owned snapshots retire through the owner's GPU-completion tracker.
+Shape or placement changes invalidate the capture. Reset discards unsubmitted captures; GPU completion protects retirement. Finished-picture hold uses one clean snapshot per feature, independent of rotating presentation buffers, with fence-protected reuse.
 
-Finished-picture hold owns one clean presentation snapshot per feature, independently of the
-rotating swapchain buffers and presentation slots. Its queue fence protects reuse. See
-[finished-picture routes](../../../docs/NR-FINISHED-BRIDGES.md).
-
-Hold is a comparison aid, not a simulation pause: the game can continue updating while the
-NR input stays frozen. Native Vulkan does not implement the D3D12 input-hold path.
+The game simulation continues while the NR image is frozen. Native Vulkan does not implement this input-hold path. See [presentation bridges](../../../docs/NR-FINISHED-BRIDGES.md).

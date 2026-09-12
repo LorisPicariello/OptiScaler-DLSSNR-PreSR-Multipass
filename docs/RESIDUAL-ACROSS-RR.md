@@ -1,39 +1,13 @@
-# Carrying a pre-upscale NR edit across RR
+# Accumulating NR edits across RR
 
-Use **Generate before upscale, apply after upscale** for both SR and RR. NR edits an owned copy
-of the original input. The game processes clean Color through SR or RR+SR, while a separate
-DLSS, FSR 2.2, FidelityFX or XeSS context upscales the NR edit. DLSS uses private RR when compatible
-native DX12 RR guides are available, otherwise SR. Both paths share the same
-**Private NR upscaler** selector and generation/history lifecycle.
+**Generate before upscale, apply after upscale** leaves the game's SR/RR input clean and enlarges NR's edit separately. Enable **Apply NR to the finished picture** to compose after effects/HUD. Ordinary pre-upscale NR does not enable this route automatically.
 
-Also enable **Apply NR to the finished picture** to defer composition until presentation, after
-game effects and HUD. The game's RR output stays clean. This uses the existing bounded log-gain
-carrier and SDR/scRGB/HDR10 transfer, including optional HDR response matching.
+For source RR, form the scene-linear difference `edited - original`, reproject the previous difference with game motion vectors, then blend in the current edit. `ResidualAcrossRRBlend` controls new contribution: default 0.08, range 0.01–1. Cold/reset history and invalid motion fade in from zero.
 
-On the RR route, the v0.7.7 motion-guided accumulator runs before private upscaling. It forms the
-signed scene-linear difference `NR edited - original`, reprojects the previous difference using
-the game's motion vectors, then blends in the current difference. `ResidualAcrossRRBlend` controls
-this blend (default 0.08, range 0.01..1). Cold/reset history and invalid motion fade in from zero.
-Two render-resolution FP32 histories belong to each generation and retire with its GPU resources.
-At 2560x1440 these add 112.5 MiB. Camera cuts, skipped/unmatched evaluations and mode changes use
-the existing private-generation reset rules, so the accumulator cannot reuse invalid history.
+Two render-resolution FP32 histories add 112.5 MiB at 2560×1440. Cuts, skipped/unmatched calls and mode changes reset them; GPU retirement protects their lifetime. There is no depth-based disocclusion rejection, so lag/smearing remain possible.
 
-The accumulated difference is composed at the same input resolution and passed through the existing
-signed/log-gain carrier encoder. The private upscaler performs the actual enlargement; the old
-bilinear render-to-output enlargement is not used. The game receives its unchanged input and the
-enlarged edit is applied afterward. The finished-picture HDR transfer remains available.
+Compose the accumulated difference at input resolution, encode the signed or finished-picture log-gain carrier, then enlarge with the selected private upscaler. Its temporal history is separate from accumulation. DLSS uses private RR with compatible native material guides, otherwise SR. Finished-picture HDR response matching remains available.
 
-Old `RunBeforeSR=true` plus `ResidualAcrossRR=true` INIs select this separate-edit route too.
-Ordinary pre-upscale NR remains manual and does not acquire residual accumulation automatically.
-The separate accumulator and private upscaler each maintain their own temporal history. As in
-v0.7.7 there is no depth-based disocclusion rejection; smearing, lag and the additional temporal
-filtering need in-game evaluation.
+Legacy `RunBeforeSR=true` plus `ResidualAcrossRR=true` selects this route. D3D12 and its bridges support the private seam; early-to-finished composition supports D3D12/D3D11. Native Vulkan has no private adapter. Failed or unsupported frames keep the clean image.
 
-The private path runs on D3D12 and its bridges. Native Vulkan has no private SR adapter and
-reports that limitation. Early edit plus finished-picture composition supports D3D12 and the
-D3D11 bridge. Unsupported offsets, missing guides or unmatched/failed evaluations retain the
-clean game frame. See [private edit upscaling](DEFERRED-NR-DLSS.md) for configuration and limits.
-
-Synthetic checks cover matching seams, motion reprojection, cold/warm/reset history, input-resolution
-composition, independent private SR/RR contexts, signed/neutral carrier reconstruction, and HDR/SDR transfer. They do
-not establish moving-scene quality with noisy ray-traced input; gameplay verification remains necessary.
+Synthetic checks cover reprojection, reset/history, seam pairing, composition and private contexts. See [configuration](DEFERRED-NR-DLSS.md), [private RR](NR-PRIVATE-RR.md) and [game evidence](NR-UPSTREAM-REVIEW.md).

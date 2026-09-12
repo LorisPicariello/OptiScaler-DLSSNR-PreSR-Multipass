@@ -1,84 +1,25 @@
-# Neural Rendering pipeline controls
+# NR pipeline controls
 
-The NR panel shows the configured colour/edit path. Click a box to open its settings below
-the chart. Muted game stages provide context; selecting a box changes only the panel being
-viewed. Runtime status remains visible because unsupported configurations can fall back or
-fail. The diagram is not a claim that every configured stage is currently executing.
+Click a chart box to open its settings. Linear routes use one column; a separate edit branches and rejoins where applied. Muted boxes show game stages. The chart shows configuration; runtime status reports execution or fallback. **Inspect NR** is collapsible below the chart.
 
-Linear routes stay in one vertical column. Only routes carrying a separate NR edit split
-left/right and rejoin at application. Inspection is a separate collapsible heading below the stage settings.
-Enable Neural Rendering, Apply model, Generate model before upscale, Apply NR to the finished
-picture, and Generate before SR/apply after SR sit above it; labels wrap in narrow overlays. The generation toggle keeps the existing before-SR setting
-and is checked and disabled while deferred generation forces that placement.
+| Controls | Purpose |
+| --- | --- |
+| Enable NR / Apply model | Stop NR work / hide its edit while still evaluating |
+| Generate model before upscale | Run on the active input before SR or RR+SR |
+| Generate before upscale, apply after upscale | Process a separate edit; forces early generation |
+| Apply NR to the finished picture | Apply after game effects/HUD, directly or using the early edit |
+| Prepare NR input | Model resolution, scaling filters, enlargement, HDR mapping and exposure |
+| Exposure calibration | Scan candidate, white-point anchors, inversion and trim |
+| NR model | Pass count and per-pass style, intensity, local structure/tone, skin structure and auto mask |
+| Apply NR edit | Detail/colour strength, highlight guard and optional skin/environment filter |
+| Inspect NR | Hold, comparisons, wipe/zoom, labels and debug views |
 
-| Section | Existing controls | Role |
-| --- | --- | --- |
-| Top controls / status | Enable Neural Rendering; Apply model; Generate model before upscale; finished-picture mode; generate before/apply after; runtime status and retry | Starts/stops NR work and chooses generation placement. Timing retains its existing meaning. |
-| Game input / placement | Carry edit across RR; accumulation rate | Chooses where colour or the separately generated edit joins the game pipeline. |
-| Prepare NR input | Model resolution; downscaler; enlargement; HDR mapping; white-point source; paper white; exposure trim | Prepares the model's working image and controls how its result is resized. Reversible HDR mapping also determines the reconstruction/composition method. |
-| Exposure calibration within input preparation | Scan meter; anchors and their white points; scan trim; inversion; advanced candidate readouts | Calibrates the scanned exposure source. These are attached to input preparation, rather than a separate rendering pass. |
-| NR model | Pass count; pass 1 and pass 2 style, intensity, local structure, local tone, skin structure and automatic skin mask; resets/inheritance | Generates the edit. The chart shows the configured pass count; a second pass has its own settings/history and additional cost. |
-| Apply NR edit | Detail/colour strengths; highlight guard; separate skin/environment detail and colour; skin-colour permission; mask preview | Controls how the result changes the image. Hiding the edit still runs the model. |
-| Inspect NR | Hold frame; comparison mode; swap/labels/label size; side-by-side zoom; wipe split; debug view | Collapsible tools outside the chart. Later game rendering can still change the displayed image. |
+Ordinary routes run prepare → model → compose together before or after SR/RR. Finished-picture mode puts them after effects/HUD. Separate-edit routes leave the game input clean and join after SR/RR or at presentation. Depth/motion are guides, not colour stages; the chart does not configure FG.
 
-## Routes
+The pass selector shows **1** in muted green and **2** in muted red, scaled with HDR text brightness. Later passes inherit pass 1 except local tone (default zero); reset clears overrides. Sliders commit on release. Preset hints remain advanced because their effect is unverified.
 
-- **Normal before SR:** input -> prepare -> model -> apply -> SR/RR -> game effects/HUD -> output.
-- **Normal after SR:** input -> SR/RR -> prepare -> model -> apply -> game effects/HUD -> output.
-- **Generate before/apply after:** input branches into game SR and NR. NR's edit is upscaled separately and joins after game SR.
-- **Carry across RR:** the NR branch accumulates the edit using motion vectors and joins after RR/SR.
-- **Finished picture:** preparation, model and application follow the game's effects/HUD.
-- **Generate early/apply to finished picture:** NR generates and upscales its edit in a separate branch, then joins after game effects/HUD.
-- **NR disabled:** only the linear game path is drawn; NR configuration buttons remain available below it.
+The model node is green. Timing shows measured NR GPU elapsed time plus estimated remaining frame time, using real DXGI frames rather than generated frames. Overlap can make NR time exceed the frame interval; the bar then reports overlap. It is not an additive workload measurement.
 
-The output box represents continuation to frame generation/presentation. It does not move
-or configure those systems. Depth and motion guide NR but are not separate colour stages.
-Existing restrictions, fallback messages, INI defaults, limits, reset behavior and delayed
-slider commits are preserved. Advanced INI-only settings are not newly exposed or removed.
+Hold freezes input and guides for early/deferred processing; early-to-finished mode also holds one clean final image across presentation slots. It does not pause the game. See [hold limits](../OptiScaler/dlssnr/design/frame-hold.md), [bridges](NR-FINISHED-BRIDGES.md) and [enlargement](NR-DLSS-ENLARGEMENT.md).
 
-## Initial chart validation
-
-All 49 NR option references from the preceding menu remain present. The production chart
-was rendered with the repository's ImGui DX11 backend on WARP for all six enabled routes
-and the disabled state. The four editable stage boxes and Inspect tool passed click-selection
-checks. Both top controls accept clicks on their boxes and wrapped labels; a forced generation
-setting stays disabled on both click targets.
-Rendering algorithms, parameter routing, shaders, timing and INI serialization are unchanged.
-
-## Pass selector and hold-frame revision
-
-The pass selector displays `1` in muted green and `2` in muted red. Both colours scale with
-the overlay's text brightness, including its HDR adjustment. Advanced INI pass counts remain
-available. Tooltips explain the control briefly; backend implementation notes and redundant
-instructions were removed. Inspection no longer appears as a chart node or tool button.
-
-The production chart and pass selector were rendered offscreen for all seven routes/states.
-The proxy regression exercises held sampling/exposure metadata and restoration, including
-an unsuccessful evaluation. A WARP GPU harness using the production input-hold implementation
-passed three rotating input sets, four input textures, release/recapture, and two sizes for
-normal early NR, deferred NR, and both early/finished configurations. No game was launched.
-These checks do not establish in-game visual stability or HDR display brightness.
-
-Hold-frame now freezes colour, depth, motion, exposure and sampling metadata before the shared
-DX12 upscaler call when generation is early. Deferred NR is no longer disabled by hold-frame.
-Early generation with finished-picture application also holds one clean finished picture
-across presentation slots. See `OptiScaler/dlssnr/design/frame-hold.md` for limits.
-
-## Finished-picture backend support
-
-The finished-picture stage now accepts native DX12, DX11 through its DX12 bridge, and Vulkan.
-Vulkan uses native NR at presentation even for a Vulkan/DX12 upscaler. Early generation with
-application to the finished picture remains a DX12/DX11-bridge mode; Vulkan reports that
-limitation instead of silently using a different placement. See `NR-FINISHED-BRIDGES.md`.
-
-## NR colour and timing bar
-
-The model stage is green in every route, with theme-adjusted hover and selection brightness.
-The runtime area shows a horizontal stack of measured NR GPU time and estimated remaining
-rendered-frame time. The DXGI real-frame interval is used even when FG inserts frames; native
-Vulkan uses the existing overlay interval. This is an estimate, not a GPU workload breakdown
-or an FG-feature timer: overlapping work and delayed timing samples can make NR exceed the
-frame interval. That case shows a full green bar and an explicit overlap note.
-
-The existing offscreen ImGui/WARP harness rendered all routes and exercised chart selection.
-Normal and overlapping timing examples were visually checked. No game settings were changed.
+Offscreen ImGui/WARP checks covered all routes, selection, wrapped labels, forced controls and timing overlap. GPU/proxy checks covered held inputs, rotating resources and restoration after failure. [Live results](NR-UPSTREAM-REVIEW.md) describe the narrower game coverage.

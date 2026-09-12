@@ -1,56 +1,15 @@
-# Private Ray Reconstruction for NR residuals
+# Private RR for early NR residuals
 
-When the private upscaler is DLSS, native DX12 games supplying valid RR inputs use
-an independent Ray Reconstruction feature for the encoded residual image. This
-applies to post-upscale and finished-picture residual application. Separate-edit
-placement remains manual; no new setting or helper DLL is required.
+With DLSS selected as the private upscaler, compatible native D3D12 RR guides select an independent RR context. This applies to early edits composed after SR/RR or at presentation. Placement stays manual. Source RR first uses [motion accumulation](RESIDUAL-ACROSS-RR.md).
 
-For source RR evaluations, the signed NR difference first passes through the v0.7.7
-motion-reprojected accumulator (default 8% new contribution). The accumulated edit is
-encoded using the existing carrier and enlarged by the private upscaler. See
-[residual accumulation](RESIDUAL-ACROSS-RR.md) for reset, memory and temporal limitations.
+The pre-upscale seam snapshots albedo, normals, roughness, reflection motion/hit distances, offsets and camera matrices. Private RR receives the encoded residual, its own output/history and those guides in **linear HDR mode, exposure 1**. No PQ/game exposure is applied to the carrier. Game colour/output remain separate; borrowed guide states are restored and aliases transition once.
 
-The pre-upscale seam snapshots diffuse/specular albedo, normals, roughness,
-reflection motion and hit-distance guides, offsets, and camera matrices. Private
-RR receives the encoded residual as colour and its own output and history. It is
-created in **linear HDR mode with exposure fixed at 1**. The carrier stays bounded
-and its encoding/decoding is unchanged; this does not apply PQ or game exposure to
-it. Game colour layers and game output resources are not used as private RR inputs
-or outputs. Borrowed guide states are restored and aliased inputs transition once.
+Missing/incompatible guides use private SR. DX11/Vulkan bridges lack RR material/reflection guides and retain SR; native Vulkan has no private adapter. Post/finished **Matched residual + DLSS** always uses SR. Generation changes retire safely; failures keep the clean frame and report the NGX error.
 
-Missing/incompatible RR guides use ordinary private DLSS SR. DX11/Vulkan bridges
-currently do not transfer RR material/reflection guides and retain SR. Native
-Vulkan's separate private implementation and other selected private upscalers are
-unchanged. Changes to creation properties retire the prior generation through the
-existing GPU lifetime mechanism. Failure retains the clean game frame; status/logs
-identify the backend and exact NGX error.
+## Cyberpunk initialization
 
-## Cyberpunk initialization rejection
+Cyberpunk's executable profile rejected LDR RR creation with `0xBAD00005` (InvalidParameter), while the same standalone call succeeded under another name. Adding `NVSDK_NGX_DLSS_Feature_Flags_IsHDR` fixed both creation and evaluation in the production-adapter profile test. Ordinary SR retains LDR creation.
 
-Cyberpunk's executable-name NVIDIA profile rejects LDR RR creation with
-`0xBAD00005` (`NVSDK_NGX_Result_FAIL_InvalidParameter`). The same call succeeds
-under the standalone test's normal executable name. Application ID, resolution,
-quality, depth flags, and basic RR coexistence tests alone did not reproduce it.
+The [test runner](../tests/nr_private_upscaler_smoke.md) can use `-RayReconstruction -CyberpunkProfile`; it renames the offscreen harness, not the game. Two Quality-mode contexts at 1440p→4K with inverted depth passed. Neutral samples ranged about 0.4993–0.5005; signed bands were preserved within roughly 0.0005. This establishes initialization/broad signal preservation, not exact neutrality or motion quality; the debug layer was unavailable.
 
-The production-adapter regression now supports `-CyberpunkProfile`, running the
-**offscreen harness** as `Cyberpunk2077.exe` in the test output folder. It does not
-launch the game. Against the prior adapter the second RR creation fails with the
-same `BAD00005`. Adding `NVSDK_NGX_DLSS_Feature_Flags_IsHDR` for private RR makes both
-creations and evaluations succeed, with a clean process exit. Ordinary SR retains
-its existing LDR creation mode. Explicit creation fields and heap-capture bypass
-continue to match the NVIDIA helper and game-facing DLSSD path.
-
-## Validation and limitations
-
-The fixed profile test uses Cyberpunk's application ID, 2560x1440 -> 3840x2160
-Quality mode, inverted depth, and two independent RR contexts. Neutral 0.5 returned
-0.500488/0.499268/0.499268 at the sampled positions. Signed test regions
-0.25/0.5/0.75 returned 0.250000/0.500000/0.749512. This validates creation and broad
-signal preservation, not exact neutrality or temporal image quality. The D3D12
-debug layer was unavailable. In-game quality, performance and VRAM behaviour still
-require testing.
-
-RR on encoded residuals is experimental: game guides describe the scene rather
-than the residual. NGX keys and required guides follow NVIDIA's
-[RR integration guide](https://github.com/NVIDIA-RTX/Streamline/blob/main/docs/ProgrammingGuideDLSS_RR.md)
-and `nvsdk_ngx_defs_dlssd.h`.
+RR sees compressed edits while its guides describe the original scene. That mismatch remains experimental. Guide requirements follow NVIDIA's [RR integration guide](https://github.com/NVIDIA-RTX/Streamline/blob/main/docs/ProgrammingGuideDLSS_RR.md) and `nvsdk_ngx_defs_dlssd.h`.
