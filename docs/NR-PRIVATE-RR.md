@@ -45,3 +45,12 @@ Both creations and evaluations succeeded. High-resolution motion flags also pass
 in a separate probe. Thus this test has not reproduced the game failure. The heap
 bypass is a compatibility correction, not a verified explanation of that failure;
 an in-game retry is needed, with detailed diagnostics if it still fails.
+
+The next run identified `CreateFeature` result `0xBAD00005` (invalid parameter).
+Its logged resolution, quality, depth and roughness settings match the passing
+offscreen test. Private RR creation now explicitly sets output-subrect support to
+zero and writes feature flags with the signed integer overload, matching NVIDIA's
+RR creation helper. This removes a dependency on missing-field defaults; whether
+it resolves Cyberpunk's creation rejection still requires an in-game retry.
+The later access violation was mapped separately to reentrant GPU resource cleanup;
+see `NR-GPU-RETIREMENT.md`.

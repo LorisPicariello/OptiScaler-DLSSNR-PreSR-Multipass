@@ -95,6 +95,7 @@ struct GpuLifetime::Impl
     Uses recordings;
     std::vector<Retired> retired;
     std::vector<std::shared_ptr<Timeline>> timelines;
+    bool collecting = false;
     static bool Complete(const Uses& uses)
     {
         return std::all_of(uses.begin(), uses.end(), [](const auto& use) { return use->Complete(); });
@@ -191,17 +192,32 @@ void GpuLifetime::Retire(std::function<void()> destroy)
 }
 void GpuLifetime::Collect()
 {
-    std::erase_if(impl->retired, [](auto& item)
+    if (impl->collecting) return;
+    struct CollectionScope
     {
-        if (!Impl::Complete(item.uses)) return false;
-        item.destroy();
-        return true;
-    });
-    std::erase_if(impl->recordings, [](const auto& use) { return use->Complete(); });
+        bool& active;
+        explicit CollectionScope(bool& value) : active(value) { active = true; }
+        ~CollectionScope() { active = false; }
+    } scope(impl->collecting);
+    for (;;)
+    {
+        std::vector<std::function<void()>> ready;
+        std::erase_if(impl->retired, [&](auto& item)
+        {
+            if (!Impl::Complete(item.uses)) return false;
+            ready.push_back(std::move(item.destroy));
+            return true;
+        });
+        std::erase_if(impl->recordings, [](const auto& use) { return use->Complete(); });
+        if (ready.empty()) break;
+        // NGX destruction can re-enter queue/reset hooks and Retire. No callback may
+        // run while a retired/recording vector is being compacted or iterated.
+        for (auto& destroy : ready) destroy();
+    }
 }
 bool GpuLifetime::Idle()
 {
     Collect();
-    return impl->recordings.empty();
+    return !impl->collecting && impl->recordings.empty();
 }
 }

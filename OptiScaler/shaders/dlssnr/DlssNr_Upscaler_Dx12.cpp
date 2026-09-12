@@ -182,6 +182,10 @@ struct PrivateUpscalerDx12::Impl
             p->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, flags);
             if (rayReconstruction)
             {
+                // Match NVIDIA's RR creation helper, including required fields whose
+                // absence may appear to work with a standalone driver's default table.
+                p->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, static_cast<int>(flags));
+                p->Set(NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0);
                 p->Set("DLSS.Denoise.Mode", 1);
                 p->Set("DLSS.Roughness.Mode", roughnessMode);
                 p->Set("DLSS.Use.HW.Depth", hardwareDepth);

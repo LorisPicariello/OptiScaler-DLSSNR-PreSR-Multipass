@@ -181,6 +181,20 @@ try
         life.Collect();
         expect(released == 71 && life.Idle(), "destroyed submitted list retained completed work");
     }
+    {
+        DlssNr::GpuLifetime life;
+        unsigned outer = 0, nested = 0;
+        life.Retire([&]
+        {
+            expect(++outer == 1, "retirement callback re-entered itself");
+            // NGX feature destruction can re-enter queue/reset hooks and retire more resources.
+            // Force the retired vector to grow while the original destruction callback is active.
+            for (unsigned i = 0; i < 64; ++i) life.Retire([&] { ++nested; });
+            life.Collect();
+            expect(!life.Idle(), "collector reported idle inside a destruction callback");
+        });
+        expect(outer == 1 && nested == 64 && life.Idle(), "reentrant retirement did not drain exactly once");
+    }
     std::puts("NR GPU lifetime smoke passed");
     return 0;
 }

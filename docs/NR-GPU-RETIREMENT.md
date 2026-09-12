@@ -30,3 +30,21 @@ The production lifetime WARP test covers 64 destroyed, unsubmitted command lists
 of a submitted list while its GPU queue is blocked, later reclamation, replay, wrapped
 identities and multiple queues. Proxy regressions and the Release x64 build passed.
 In-game VRAM behaviour over repeated mode changes and an extended session requires user testing.
+
+## Reentrant cleanup correction
+
+The 23:09:47 Cyberpunk crash on 12 September occurred in the installed `8d618db8`
+DLL at RVA `0x2d7ca5`, in the move assignment of `GpuLifetime::Impl::Retired`.
+A diagnostic relink produced an identical `.text` section and a map identifying
+that location. This places the access violation in retired-vector compaction.
+
+The old collector invoked destruction callbacks inside `std::erase_if`. NGX release
+can re-enter submission/reset hooks or retire additional resources, recursively
+collecting or reallocating that same vector while it is being compacted. A regression
+that retires 64 additional callbacks from one callback fails with the old collector.
+
+The collector now moves completed callbacks into a separate batch and finishes
+vector maintenance before invoking them. A scope guard prevents nested collection,
+and subsequent batches drain resources retired by callbacks exactly once. A nested
+idle query cannot declare the tracker safe to destroy while callbacks are active.
+The updated lifetime regression passes, including the prior fence/replay cases.
