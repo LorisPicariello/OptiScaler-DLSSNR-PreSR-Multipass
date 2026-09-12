@@ -46,6 +46,7 @@ struct XeSSProxy {
 #undef FN
 };
 struct NVNGXProxy {
+    struct ScopedFeatureCreationTrace {};
     static inline HMODULE module = nullptr;
     static inline const wchar_t* srDirectory = nullptr;
     static bool InitDx12(ID3D12Device* device) {
@@ -53,7 +54,7 @@ struct NVNGXProxy {
         auto init = (Init)GetProcAddress(module,"NVSDK_NGX_D3D12_Init_Ext");
         const wchar_t* paths[] = { srDirectory };
         NVSDK_NGX_FeatureCommonInfo info {}; info.PathListInfo.Path=paths; info.PathListInfo.Length=1;
-        return init && init(0x24480451,L".",device,NVSDK_NGX_Version_API,&info)==NVSDK_NGX_Result_Success;
+        return init && init(useRr ? 0x5F83393 : 0x24480451,L".",device,NVSDK_NGX_Version_API,&info)==NVSDK_NGX_Result_Success;
     }
 #define FN(alias,name) static auto alias(){return (decltype(&name))GetProcAddress(module,#name);}
     FN(D3D12_AllocateParameters,NVSDK_NGX_D3D12_AllocateParameters)
@@ -64,9 +65,18 @@ struct NVNGXProxy {
                                     NVSDK_NGX_Parameter* parameters, NVSDK_NGX_Handle** handle) {
         if (id != (useRr ? NVSDK_NGX_Feature_RayReconstruction : NVSDK_NGX_Feature_SuperSampling))
             throw std::runtime_error("Private edit upscaler requested the wrong NGX feature");
+        // Match coexistence with Cyberpunk's HDR scene RR before creating the LDR residual RR.
+        if (useRr && srCreates == 0)
+        {
+            unsigned flags=0; parameters->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,&flags);
+            parameters->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
+                             flags | NVSDK_NGX_DLSS_Feature_Flags_IsHDR);
+        }
         ++srCreates;
-        return ((decltype(&NVSDK_NGX_D3D12_CreateFeature))GetProcAddress(module,
+        const auto result = ((decltype(&NVSDK_NGX_D3D12_CreateFeature))GetProcAddress(module,
             "NVSDK_NGX_D3D12_CreateFeature"))(cmd,id,parameters,handle);
+        std::printf("Private create result: %08X\n",(unsigned)result);
+        return result;
     }
     static auto D3D12_CreateFeature() { return &CreateSr; }
     FN(D3D12_EvaluateFeature,NVSDK_NGX_D3D12_EvaluateFeature)
@@ -120,7 +130,7 @@ int wmain(int argc,wchar_t** argv) try {
         expect(WaitForSingleObject(event,15000)==WAIT_OBJECT_0,"GPU fence timeout");
         check(allocator->Reset()); check(commands->Reset(allocator.Get(),nullptr));
     };
-    constexpr UINT w=1920,h=1080,ow=3840,oh=2160;
+    const UINT w=NVNGXProxy::useRr ? 2560 : 1920,h=NVNGXProxy::useRr ? 1440 : 1080,ow=3840,oh=2160;
     auto texture=[&](DXGI_FORMAT format,UINT width,UINT height) {
         D3D12_RESOURCE_DESC d {}; d.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D; d.Width=width; d.Height=height;
         d.DepthOrArraySize=d.MipLevels=1; d.Format=format; d.SampleDesc.Count=1; d.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -159,6 +169,7 @@ int wmain(int argc,wchar_t** argv) try {
     for (auto* r: {carrier.Get(),exposure.Get()}) barrier(commands.Get(),r,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     DlssNr::PrivateUpscalerCreateDx12 info { w, h, ow, oh, (int)NVSDK_NGX_PerfQuality_Value_MaxPerf };
     info.rayReconstruction=NVNGXProxy::useRr; info.roughnessMode=1;
+    if (NVNGXProxy::useRr) { info.quality=NVSDK_NGX_PerfQuality_Value_MaxQuality; info.depthInverted=true; }
     auto feature=std::make_unique<DlssNr::PrivateUpscalerDx12>(selected);
     auto other=std::make_unique<DlssNr::PrivateUpscalerDx12>(selected);
     expect(feature->Init(device.Get(),commands.Get(),info),"First private backend init failed"); submit();
@@ -239,6 +250,6 @@ int wmain(int argc,wchar_t** argv) try {
         if(message->Severity<=D3D12_MESSAGE_SEVERITY_ERROR){std::fprintf(stderr,"D3D12: %s\n",message->pDescription);++errors;}
     }
     expect(errors==0,"D3D12 validation errors");
-    std::printf("PASS: production %s adapter, two live contexts, neutral/signed 1080p -> 4K carrier\n",NVNGXProxy::useRr ? "DLSS RR" : DlssNr::PrivateUpscalerName(selected));
+    std::printf("PASS: production %s adapter, two live contexts, neutral/signed %ux%u -> 4K carrier\n",NVNGXProxy::useRr ? "DLSS RR" : DlssNr::PrivateUpscalerName(selected),w,h);
     return 0;
 } catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }

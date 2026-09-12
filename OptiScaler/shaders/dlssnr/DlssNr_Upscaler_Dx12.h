@@ -3,6 +3,7 @@
 #include <d3d12.h>
 #include <memory>
 #include <array>
+#include <string>
 
 struct NVSDK_NGX_Parameter;
 
@@ -59,5 +60,6 @@ class PrivateUpscalerDx12
     bool Evaluate(ID3D12GraphicsCommandList* cmd, const PrivateUpscalerFrameDx12& frame);
     static PrivateRrInputsDx12 ReadRrInputs(NVSDK_NGX_Parameter* source, unsigned width, unsigned height);
     const char* Name() const;
+    const std::string& Error() const;
 };
 } // namespace DlssNr

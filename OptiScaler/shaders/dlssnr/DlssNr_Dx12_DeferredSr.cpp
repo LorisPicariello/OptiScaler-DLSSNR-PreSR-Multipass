@@ -261,11 +261,15 @@ auto DlssNr_Dx12::State::DeferredSrContext::Before(ID3D12GraphicsCommandList* cm
         info.roughnessMode = g.frame.rr.roughnessMode;
         info.hardwareDepth = g.frame.rr.hardwareDepth;
         g.upscaler = std::make_unique<DlssNr::PrivateUpscalerDx12>(g.backend);
+        LOG_INFO("DLSS-NR private creation: {} {}x{} -> {}x{}, quality {}, inverted {}, jittered MV {}, low-res MV {}, roughness {}, HW depth {}",
+                 g.privateRr ? "DLSS RR" : DlssNr::PrivateUpscalerName(g.backend),
+                 info.width, info.height, info.outputWidth, info.outputHeight, info.quality,
+                 info.depthInverted, info.jitteredMotion, info.lowResolutionMotion, info.roughnessMode, info.hardwareDepth);
         if (!g.upscaler->Init(g.device, cmd, info))
         {
             g.failed = true;
             Say(std::string("private ") + g.upscaler->Name() +
-                " creation failed (runtime/device/input size); clean SR frame retained");
+                " creation failed: " + g.upscaler->Error() + "; clean SR frame retained");
             return;
         }
         DlssNrConstants unit {};
@@ -468,7 +472,7 @@ auto DlssNr_Dx12::State::DeferredSrContext::After(ID3D12GraphicsCommandList* cmd
     {
         g.failed = true;
         Say(std::string("private ") + g.upscaler->Name() +
-            " evaluation failed; clean SR frame retained");
+            " evaluation failed: " + g.upscaler->Error() + "; clean SR frame retained");
         return;
     }
     LOG_TRACE("DLSS-NR deferred: applied current-frame contribution at epoch {} (reset {})", epoch, g.reset);

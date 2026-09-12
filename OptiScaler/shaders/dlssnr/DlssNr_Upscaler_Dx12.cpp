@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cmath>
 #include <vector>
+#include <cstdio>
 
 #include <dlssnr/DlssNr_Upscaler.h>
 #include <proxies/FfxApi_Proxy.h>
@@ -86,6 +87,14 @@ struct PrivateUpscalerDx12::Impl
     unsigned width = 0, height = 0, outWidth = 0, outHeight = 0;
     bool rayReconstruction = false;
     unsigned roughnessMode = 0, hardwareDepth = 1;
+    std::string error = "runtime/device/input size";
+    bool NgxError(const char* operation, NVSDK_NGX_Result result)
+    {
+        char message[96];
+        std::snprintf(message, sizeof(message), "%s returned 0x%08X", operation, (unsigned)result);
+        error = message;
+        return false;
+    }
 
     static void Barrier(ID3D12GraphicsCommandList* cmd, ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
                         D3D12_RESOURCE_STATES after)
@@ -151,9 +160,14 @@ struct PrivateUpscalerDx12::Impl
             hardwareDepth = info.hardwareDepth;
             if (!NVNGXProxy::InitDx12(device) || !NVNGXProxy::D3D12_AllocateParameters() ||
                 !NVNGXProxy::D3D12_DestroyParameters() || !NVNGXProxy::D3D12_CreateFeature() ||
-                !NVNGXProxy::D3D12_EvaluateFeature() || !NVNGXProxy::D3D12_ReleaseFeature() ||
-                NVNGXProxy::D3D12_AllocateParameters()(&parameters) != NVSDK_NGX_Result_Success || !parameters)
+                !NVNGXProxy::D3D12_EvaluateFeature() || !NVNGXProxy::D3D12_ReleaseFeature())
+            {
+                error = "NGX initialization or required entry point unavailable";
                 return false;
+            }
+            const auto allocated = NVNGXProxy::D3D12_AllocateParameters()(&parameters);
+            if (allocated != NVSDK_NGX_Result_Success) return NgxError("AllocateParameters", allocated);
+            if (!parameters) { error = "AllocateParameters returned no parameter table"; return false; }
             auto* p = parameters;
             p->Set(NVSDK_NGX_Parameter_Width, width);
             p->Set(NVSDK_NGX_Parameter_Height, height);
@@ -172,9 +186,15 @@ struct PrivateUpscalerDx12::Impl
                 p->Set("DLSS.Roughness.Mode", roughnessMode);
                 p->Set("DLSS.Use.HW.Depth", hardwareDepth);
             }
-            return NVNGXProxy::D3D12_CreateFeature()(cmd, rayReconstruction ? NVSDK_NGX_Feature_RayReconstruction
-                                                                         : NVSDK_NGX_Feature_SuperSampling, p, &feature) ==
-                       NVSDK_NGX_Result_Success && feature;
+            // Match the game-facing DLSSD creation path: private heaps are not game FG heaps.
+            ScopedSkipHeapCapture skipHeapCapture {};
+            NVNGXProxy::ScopedFeatureCreationTrace trace;
+            const auto created = NVNGXProxy::D3D12_CreateFeature()(
+                cmd, rayReconstruction ? NVSDK_NGX_Feature_RayReconstruction : NVSDK_NGX_Feature_SuperSampling,
+                p, &feature);
+            if (created != NVSDK_NGX_Result_Success) return NgxError("CreateFeature", created);
+            if (!feature) { error = "CreateFeature returned no feature handle"; return false; }
+            return true;
         }
         ScopedSkipSpoofingGlobal skipSpoofing {};
         ScopedSkipHeapCapture skipCapture {};
@@ -325,7 +345,9 @@ struct PrivateUpscalerDx12::Impl
                 p->Set("WorldToViewMatrix", f.rr.matrices ? (void*)f.rr.worldToView.data() : nullptr);
                 p->Set("ViewToClipMatrix", f.rr.matrices ? (void*)f.rr.viewToClip.data() : nullptr);
             }
-            result = NVNGXProxy::D3D12_EvaluateFeature()(cmd, feature, p, nullptr) == NVSDK_NGX_Result_Success;
+            const auto evaluated = NVNGXProxy::D3D12_EvaluateFeature()(cmd, feature, p, nullptr);
+            result = evaluated == NVSDK_NGX_Result_Success;
+            if (!result) NgxError("EvaluateFeature", evaluated);
         }
         else if (backend == PrivateUpscaler::FSR22 && fsr2Ready)
         {
@@ -384,6 +406,7 @@ const char* PrivateUpscalerDx12::Name() const
 {
     return impl->rayReconstruction ? "DLSS RR" : PrivateUpscalerName(impl->backend);
 }
+const std::string& PrivateUpscalerDx12::Error() const { return impl->error; }
 bool PrivateUpscalerDx12::Init(ID3D12Device* device, ID3D12GraphicsCommandList* cmd,
                                 const PrivateUpscalerCreateDx12& info)
 {

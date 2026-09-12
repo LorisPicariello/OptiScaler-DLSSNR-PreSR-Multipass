@@ -31,3 +31,17 @@ signal preservation, not exact neutrality or temporal quality. Snapshot ownershi
 missing guides and guide bounds were checked. The ordinary DLSS fallback hardware
 smoke also passed. The D3D12 debug layer was unavailable. In-game image quality,
 motion stability and VRAM behaviour remain unverified.
+
+The Cyberpunk run starting 22:24:34 on 12 September reported private RR creation
+failure at 22:50:27 with RR guides available. That build discarded the NGX return
+code, so its log cannot establish the reason. The follow-up aligns private NGX
+creation with the main DLSSD heap-capture bypass and reports allocation/creation/
+evaluation return codes. NGX messages are promoted only on the creation thread
+inside that call; routine per-frame driver logging remains unchanged.
+
+The updated hardware test uses Cyberpunk's application ID, 2560x1440 -> 3840x2160
+Quality mode, inverted depth, and coexisting HDR scene/LDR residual RR instances.
+Both creations and evaluations succeeded. High-resolution motion flags also passed
+in a separate probe. Thus this test has not reproduced the game failure. The heap
+bypass is a compatibility correction, not a verified explanation of that failure;
+an in-game retry is needed, with detailed diagnostics if it still fails.
