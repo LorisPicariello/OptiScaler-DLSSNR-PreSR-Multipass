@@ -1,8 +1,9 @@
 # NR integration and compatibility prerequisites
 
-The NR contribution keeps the API handoffs needed for its supported routes. Independent KCD2
-driver-query/waitable-swapchain changes and Vulkan overlay/FG policy are separate compatibility
-work. Streamline active-plugin binding remains a prerequisite for installed driver overrides.
+Game-validation builds include all compatibility fixes together with NR. KCD2 driver-query/
+waitable-swapchain changes, Streamline binding/capability fixes, Vulkan overlay/FG interlocks and
+DXGI presentation support remain enabled. They are separate upstream review units, not optional
+omissions from installed test builds. `codex/nr-game-validation` is the combined build branch.
 
 - Streamline feature functions are resolved through the active interposer after device binding.
   NVIDIA driver overrides can initialize a different plugin from the bundled DLL even with

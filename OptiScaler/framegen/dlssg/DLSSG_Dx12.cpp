@@ -7,6 +7,7 @@
 #include <resource_tracking/ResTrack_dx12.h>
 
 #include <hooks/Reflex_Hooks.h>
+#include <hooks/Streamline_Hooks.h>
 #include <hooks/DxgiFactory_Hooks.h>
 
 #include <magic_enum.hpp>
@@ -373,6 +374,7 @@ bool DLSSG_Dx12::Dispatch()
         options.dynamicTargetFrameRate = Config::Instance()->FGDLSSGFramerateTargetDMFG.value_or_default();
     }
 
+    StreamlineHooks::applyMenuDlssgInterlock(options, true);
     auto dlssgSetOptionsResult = StreamlineProxy::DLSSGSetOptions()(viewport, options);
 
     if (dlssgSetOptionsResult != sl::Result::eOk)
