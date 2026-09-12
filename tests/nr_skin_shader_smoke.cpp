@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <cstddef>
+#include <DirectXPackedVector.h>
 #include "../OptiScaler/shaders/dlssnr/DlssNr_Common.h"
 #include "../OptiScaler/shaders/dlssnr/precompile/DlssNr_Shader.h"
 using Microsoft::WRL::ComPtr;
@@ -137,7 +138,7 @@ int wmain(int argc, wchar_t** argv) try {
     for (int i=0;i<2;++i)
     {
         const float difference=edited[i].r-base[i].r;
-        expect(std::abs(result[i].r-(.5f+.5f*difference/(1+std::abs(difference))))<.0001f,
+        expect(std::abs(result[i].r-(.5f+.5f*difference/(1.0f/64+std::abs(difference))))<.0001f,
                "Private enlargement proxy carrier encoding");
     }
     ctx->UpdateSubresource(model.Get(),0,nullptr,result.data(),sizeof(result),0);
@@ -155,6 +156,27 @@ int wmain(int argc, wchar_t** argv) try {
     settings.Passthrough=0;
     result=run();
     expect(same(result[0],hdrBase[0]) && same(result[1],hdrBase[1]), "Neutral DLSS carrier altered HDR base");
+    // Model edits in KCD2's pre-tonemap shadows were smaller than one carrier FP16 step.
+    // Exercise actual storage rounding between production encode and resolve, in both directions.
+    const std::array<Pixel,2> darkBase {{{.0002f,.0002f,.0002f,1},{.0002f,.0002f,.0002f,1}}};
+    const std::array<Pixel,2> darkEdit {{{.00035f,.00035f,.00035f,1},{.00008f,.00008f,.00008f,1}}};
+    ctx->UpdateSubresource(original.Get(),0,nullptr,darkBase.data(),sizeof(darkBase),0);
+    ctx->UpdateSubresource(model.Get(),0,nullptr,darkEdit.data(),sizeof(darkEdit),0);
+    settings.Passthrough=1; settings.Mode=DlssNrMode_EncodeProxyResidual;
+    result=run();
+    for (auto& pixel : result)
+        for (float* channel : {&pixel.r,&pixel.g,&pixel.b})
+            *channel=DirectX::PackedVector::XMConvertHalfToFloat(
+                DirectX::PackedVector::XMConvertFloatToHalf(*channel));
+    ctx->UpdateSubresource(model.Get(),0,nullptr,result.data(),sizeof(result),0);
+    settings.Mode=DlssNrMode_Resolve;
+    result=run();
+    for (int i=0;i<2;++i)
+        expect(std::abs(result[i].r-darkEdit[i].r)<.00001f &&
+               std::abs(result[i].g-darkEdit[i].g)<.00001f &&
+               std::abs(result[i].b-darkEdit[i].b)<.00001f,
+               "FP16 private enlargement erased shadow brightening or darkening");
+    std::puts("PASS: FP16 matched residual preserves shadow brightening and darkening");
     ctx->UpdateSubresource(original.Get(),0,nullptr,base.data(),sizeof(base),0);
     settings = {}; settings.Mode=DlssNrMode_ResizePrivateGuides;
     settings.Width=settings.Height=1; settings.GuideWidth=1; settings.GuideHeight=1;

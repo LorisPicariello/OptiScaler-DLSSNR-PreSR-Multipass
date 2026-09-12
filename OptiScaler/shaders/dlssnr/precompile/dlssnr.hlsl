@@ -500,14 +500,15 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     // Experimental private-DLSS carrier, not an ordinary colour image. Neutral 0.5 encodes zero;
     // values below it carry darkening. A reversible signed compression avoids clipping negative
-    // edits at the DLSS input. ExposurePreMul is a fixed scale shared by this frame's two stages.
+    // edits at the DLSS input. Scale small linear-light edits up before storing them in FP16;
+    // at unit scale, a dark scene's edits round to neutral before DLSS even sees them.
     if (gMode == 9)
     {
         float3 source = gSource.Load(int3(id.xy, 0)).rgb;
         float3 answer = gModel.Load(int3(id.xy, 0)).rgb;
         if (gPassthrough == 0) { source = SrgbToLinear(source); answer = SrgbToLinear(answer); }
         float3 d = SanitizeFinite3(answer - source, 0.0);
-        gTarget[id.xy] = float4(0.5 + 0.5 * d / (1.0 + abs(d)), 1.0);
+        gTarget[id.xy] = float4(0.5 + 0.5 * d / (1.0 / 64.0 + abs(d)), 1.0);
         return;
     }
     if (gMode == 10)
@@ -861,7 +862,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     if (gTransfer == 2)
     {
         float3 carrier = clamp(2.0 * SanitizeFinite3(modelSample.rgb, 0.5) - 1.0, -0.999, 0.999);
-        edit = carrier / (1.0 - abs(carrier));
+        edit = (1.0 / 64.0) * carrier / (1.0 - abs(carrier));
     }
 
     // Coring was tried here and removed: the per-frame churn's amplitude overlaps the real detail's,
