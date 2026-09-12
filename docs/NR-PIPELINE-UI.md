@@ -44,3 +44,10 @@ and the disabled state. The four editable stage boxes and Inspect tool passed cl
 checks. Both top controls accept clicks on their boxes and wrapped labels; a forced generation
 setting stays disabled on both click targets.
 Rendering algorithms, parameter routing, shaders, timing and INI serialization are unchanged.
+
+## Finished-picture backend support
+
+The finished-picture stage now accepts native DX12, DX11 through its DX12 bridge, and Vulkan.
+Vulkan uses native NR at presentation even for a Vulkan/DX12 upscaler. Early generation with
+application to the finished picture remains a DX12/DX11-bridge mode; Vulkan reports that
+limitation instead of silently using a different placement. See `NR-FINISHED-BRIDGES.md`.

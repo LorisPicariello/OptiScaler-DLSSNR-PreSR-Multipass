@@ -4,6 +4,7 @@
 #include "NgxOptionalDx12Inputs.h"
 
 #include <Config.h>
+#include <dlssnr/DlssNrPipeline_Vk.h>
 
 #include <SysUtils.h>
 
@@ -2070,6 +2071,8 @@ bool IFeature_VkwDx12::Init(VkInstance InInstance, VkPhysicalDevice InPD, VkDevi
     const bool initialised = dx12Feature->Init(_dx11on12Device, Dx12CommandList[0], InParameters);
 
     SetInit(initialised);
+    if (initialised)
+        NeuralRendering = std::make_unique<DlssNr_Vk>("Neural Rendering", InDevice, InPD);
 
     if (Dx12CommandList[0]->Close() == S_OK && Dx12CommandQueue != nullptr)
     {
@@ -2144,6 +2147,18 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
                 parameters->Set(binding.name, binding.resource);
         }
     } restoreParameters { InParameters };
+
+    if (NeuralRendering && Config::Instance()->DlssNrFinishedPicture.value_or_default())
+    {
+        auto nrFrame = DlssNr::FrameInfo(InParameters, false);
+        nrFrame.DepthInverted = DepthInverted();
+        nrFrame.MotionVectorsLowResolution = LowResMV();
+        nrFrame.RayReconstruction = GetUpscalerType() == Upscaler::DLSSD;
+        NeuralRendering->CaptureFinished(InCmdBuffer,
+            DlssNr::ParameterImage(InParameters, NVSDK_NGX_Parameter_Depth),
+            DlssNr::ParameterImage(InParameters, NVSDK_NGX_Parameter_MotionVectors), nrFrame, VulkanInstance);
+    }
+
 
     auto frame = _frameCount % VKDX12_BUFFER_COUNT;
     auto cmdList = Dx12CommandList[frame];

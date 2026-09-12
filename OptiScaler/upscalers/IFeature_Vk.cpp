@@ -99,7 +99,8 @@ bool IFeature_Vk::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InP
 
     // Order is important as that's the order of shader dispatch
     ShaderPipeline_Vk pipeline;
-    const bool useNr = NeuralRendering && NeuralRendering->CanRender() && !IsWithDx12() &&
+    const bool finishedNr = Config::Instance()->DlssNrFinishedPicture.value_or_default();
+    const bool useNr = !finishedNr && NeuralRendering && NeuralRendering->CanRender() && !IsWithDx12() &&
                        Config::Instance()->DlssNrEnabled.value_or_default() &&
                        DlssNr::HasSupportedSubrects(InParameters, false);
     const bool nrBeforeUpscale =
@@ -112,6 +113,8 @@ bool IFeature_Vk::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InP
     nrFrame.ColourIsLinearHdr = IsHdr();
     nrFrame.RayReconstruction = upscaler == Upscaler::DLSSD;
     nrFrame.MotionVectorsLowResolution = LowResMV();
+    if (finishedNr && NeuralRendering && !IsWithDx12())
+        NeuralRendering->CaptureFinished(InCmdBuffer, nrDepth, nrMotion, nrFrame, Instance);
     // Keep the current per-evaluate subrect. The feature's cached render size may be last frame's.
 
     if (useNr && !nrBeforeUpscale)

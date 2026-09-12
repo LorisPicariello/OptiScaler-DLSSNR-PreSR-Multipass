@@ -97,6 +97,7 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     void SubmitFinishedCommands(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
     bool WaitFinished();
     void ApplyFinished(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue);
+    void ApplyFinishedDx11(IDXGISwapChain* swapchain);
     std::string FinishedStatus();
     std::string DeferredStatus();
     DlssNr::CalibrationReading CalibrationStatus();

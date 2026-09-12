@@ -1,13 +1,28 @@
 // HDR10 <-> linear Rec.709 in scRGB units (1 = 80 nits).
 // Separate from the existing NR shader so SDR and ordinary NR keep their compiled code.
+#ifdef VULKAN
+[[vk::binding(0, 0)]]
+#endif
 cbuffer Params : register(b0)
 {
     uint mode; float exposureScale; uint width; uint height;
     float sceneIsLinear; float unusedColour; uint unusedDebug; float maxRatio;
 };
+#ifdef VULKAN
+[[vk::binding(1, 0)]]
+#endif
 Texture2D<float4> source : register(t0);
+#ifdef VULKAN
+[[vk::binding(2, 0)]]
+#endif
 Texture2D<float4> reference : register(t1);
+#ifdef VULKAN
+[[vk::binding(3, 0)]]
+#endif
 Texture2D<float4> original : register(t2);
+#ifdef VULKAN
+[[vk::binding(5, 0)]]
+#endif
 RWTexture2D<float4> target : register(u0);
 
 float3 DecodePQ(float3 code)

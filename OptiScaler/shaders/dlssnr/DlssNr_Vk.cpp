@@ -4,6 +4,8 @@
 #include <dlssnr/DlssNrFeature_Vk.h>
 
 #include "precompile/DlssNr_Shader_Vk.h"
+#include "precompile/dlssnr_finished_color_Shader_Vk.h"
+#include <dlssnr/DlssNrFinished_Vk.h>
 
 #include <algorithm>
 #include <cstring>
@@ -96,13 +98,17 @@ DlssNr_Vk::DlssNr_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InP
         return;
     }
 
+    std::vector<char> finishedCode(dlssnr_finished_color_spv, dlssnr_finished_color_spv + sizeof(dlssnr_finished_color_spv));
+    CreateComputePipeline(_device, _pipelineLayout, &_finishedPipeline, finishedCode);
     _init = true;
     LOG_INFO("DLSS-NR Vulkan pass up: {} constant slots, stride {}", kSlots, (uint64_t) _slotStride);
 }
 
 DlssNr_Vk::~DlssNr_Vk()
 {
+    _finished.reset();
     _model.reset();
+    if (_finishedPipeline) vkDestroyPipeline(_device, _finishedPipeline, nullptr);
     if (_device == VK_NULL_HANDLE)
         return;
 
@@ -238,9 +244,9 @@ void DlssNr_Vk::WriteDescriptors(VkDescriptorSet set, VkDeviceSize constantOffse
 bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InConstants, uint32_t InThreadsX,
                          uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
                          VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
-                         VkImageLayout InSourceLayout, VkImageLayout InMotionLayout)
+                         VkImageLayout InSourceLayout, VkImageLayout InMotionLayout, bool finishedColor)
 {
-    if (!CanRender() || InCmdList == VK_NULL_HANDLE)
+    if (!CanRender() || InCmdList == VK_NULL_HANDLE || (finishedColor && !_finishedPipeline))
         return false;
 
     if (InTarget == VK_NULL_HANDLE)
@@ -261,7 +267,7 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer InCmdList, const DlssNrConstants& InCon
     WriteDescriptors(_descriptorSets[slot], offset, InSource, InModel, InOriginal, InMotion, InTarget, InKeep,
                      InSourceLayout, InMotionLayout);
 
-    vkCmdBindPipeline(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline);
+    vkCmdBindPipeline(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, finishedColor ? _finishedPipeline : _pipeline);
     vkCmdBindDescriptorSets(InCmdList, VK_PIPELINE_BIND_POINT_COMPUTE, _pipelineLayout, 0, 1, &_descriptorSets[slot], 0,
                             nullptr);
 
@@ -309,7 +315,7 @@ VkImageInfo DlssNr_Vk::PrepareInput(VkCommandBuffer cmd, const VkImageInfo& next
 
 bool DlssNr_Vk::Dispatch(VkCommandBuffer cmd, const VkImageInfo& colour, const VkImageInfo& depth,
                          const VkImageInfo& motion, const VkImageInfo& output, const DlssNrFrameInfo_Vk& frame,
-                         VkInstance instance, VkImageLayout inputLayout)
+                         VkInstance instance, VkImageLayout inputLayout, bool* modelRan)
 {
     if (!CanRender() || !colour.Image || !output.Image || colour.Image == output.Image)
         return false;
@@ -329,6 +335,15 @@ bool DlssNr_Vk::Dispatch(VkCommandBuffer cmd, const VkImageInfo& colour, const V
         return false;
     if (!_model)
         _model = std::make_unique<DlssNr::ModelVk>(*this);
-    _model->Evaluate(cmd, colour, depth, motion, output, frame, instance, _physicalDevice, _device, inputLayout);
+    const bool ran = _model->Evaluate(cmd, colour, depth, motion, output, frame, instance, _physicalDevice, _device, inputLayout);
+    if (modelRan) *modelRan = ran;
     return true;
+}
+
+void DlssNr_Vk::CaptureFinished(VkCommandBuffer cmd, const VkImageInfo& depth, const VkImageInfo& motion,
+                                const DlssNrFrameInfo_Vk& frame, VkInstance instance)
+{
+    if (!CanRender()) return;
+    if (!_finished) _finished = std::make_unique<DlssNr::FinishedVk>(*this, _device, _physicalDevice);
+    _finished->Capture(cmd, depth, motion, frame, instance);
 }

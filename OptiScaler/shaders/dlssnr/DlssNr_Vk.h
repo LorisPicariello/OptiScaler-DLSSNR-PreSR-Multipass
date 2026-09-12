@@ -30,6 +30,7 @@
 namespace DlssNr
 {
 class ModelVk;
+class FinishedVk;
 }
 
 // NGX's Vulkan guide wrappers also state whether the image supports storage access.
@@ -46,11 +47,13 @@ class DlssNr_Vk : public Shader_Vk
 {
     // Enough slots for several dispatches per frame across the frames that can be in flight. Encode
     // and resolve are two; the debug views and the exposure fetch are the others.
-    static constexpr uint32_t kSlotsPerFrame = 6;
-    static constexpr uint32_t kFramesInFlight = 3;
+    static constexpr uint32_t kSlotsPerFrame = 10;
+    static constexpr uint32_t kFramesInFlight = 4;
     static constexpr uint32_t kSlots = kSlotsPerFrame * kFramesInFlight;
 
     std::unique_ptr<DlssNr::ModelVk> _model;
+    std::unique_ptr<DlssNr::FinishedVk> _finished;
+    VkPipeline _finishedPipeline = VK_NULL_HANDLE;
     VkImageLayout _intermediateLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkDeviceSize _slotStride = 0;   // sizeof(DlssNrConstants), rounded up to the device's alignment
@@ -81,7 +84,9 @@ class DlssNr_Vk : public Shader_Vk
     }
     bool Dispatch(VkCommandBuffer cmd, const VkImageInfo& colour, const VkImageInfo& depth, const VkImageInfo& motion,
                   const VkImageInfo& output, const DlssNrFrameInfo_Vk& frame, VkInstance instance,
-                  VkImageLayout inputLayout = VK_IMAGE_LAYOUT_GENERAL);
+                  VkImageLayout inputLayout = VK_IMAGE_LAYOUT_GENERAL, bool* modelRan = nullptr);
+    void CaptureFinished(VkCommandBuffer cmd, const VkImageInfo& depth, const VkImageInfo& motion,
+                         const DlssNrFrameInfo_Vk& frame, VkInstance instance);
 
     // One dispatch of the composition shader.
     //
@@ -100,5 +105,5 @@ class DlssNr_Vk : public Shader_Vk
                   uint32_t InThreadsY, VkImageView InSource, VkImageView InModel, VkImageView InOriginal,
                   VkImageView InMotion, VkImageView InTarget, VkImageView InKeep,
                   VkImageLayout InSourceLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                  VkImageLayout InMotionLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                  VkImageLayout InMotionLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, bool finishedColor = false);
 };

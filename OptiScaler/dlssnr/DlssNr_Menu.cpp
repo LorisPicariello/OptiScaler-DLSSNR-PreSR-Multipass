@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "DlssNrFeature_Vk.h"
+#include "DlssNrFinished_Vk.h"
 
 #include "DlssNr.h"
 #include "DlssNr_ExposureScan.h"
@@ -130,13 +131,17 @@ static void RenderPlacement(Config* config, float menuResScale)
     }
     HelpMarker(
         "Apply NR after the game has finished its lighting and effects. This may help with green noise.\nWorks with "
-        "frame generation on or off in native DirectX 12 games, including SDR, HDR10 and scRGB.\nIt can also change "
+        "DirectX 12, the DirectX 11 bridge, or Vulkan, including SDR, HDR10 and scRGB.\nIt can also change "
         "the HUD and menus. Enable Generate model before upscale to generate the changes earlier.");
     if (finishedPicture && enabled)
     {
         const auto feature = State::Instance().currentFeature;
-        if (feature && (feature->Api() != API::DX12 || feature->IsWithDx12()))
-            ImGui::TextWrapped("This option needs a native DirectX 12 game.");
+        if (State::Instance().swapchainApi == API::Vulkan)
+            ImGui::TextWrapped("%s", DlssNr::FinishedVkStatus().c_str());
+        else if (feature &&
+            (feature->Api() != API::DX12 || (feature->IsWithDx12() && State::Instance().swapchainApi != API::DX11 &&
+                                             State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx11wDx12)))
+            ImGui::TextWrapped("This option needs DirectX 12 or a DirectX 11 upscaler marked w/Dx12.");
         else
             ImGui::TextWrapped("%s", DlssNr::FinishedPictureStatus().c_str());
     }

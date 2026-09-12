@@ -209,3 +209,23 @@ The table below accounts for every changed/added path relative to the pinned off
 | tests/nr_seam_clock_smoke.cpp | Surviving NR, bridge, proxy, shader, timing and metadata regressions |
 | tests/nr_skin_shader_smoke.cpp | Surviving NR, bridge, proxy, shader, timing and metadata regressions |
 | tests/nr_vulkan_shader_smoke.cpp | Surviving NR, bridge, proxy, shader, timing and metadata regressions |
+
+## Finished-picture presentation bridges
+
+These additions are NR integration changes, not changes to ordinary FG policy. DX11 presentation
+gets a private shared colour texture and a fenced round trip; DX11's existing DX12 presenter
+uses the shared DX12 finished-picture renderer directly. Vulkan retains native model execution,
+saves guides at the upscaler seam, and inserts its own semaphore-ordered presentation commands.
+The NR owner retains all model/guide/history state. There is no helper DLL or added runtime payload.
+
+Additional audited paths:
+
+| Path | Purpose |
+| --- | --- |
+| OptiScaler/with_dx12/dx11_finished_picture.h | Shared final-frame texture and DX11/DX12 fence ordering |
+| OptiScaler/dlssnr/DlssNrFinished_Vk.cpp | Native Vulkan guide capture, frame lifetime, HDR conversion and presentation |
+| OptiScaler/dlssnr/DlssNrFinished_Vk.h | Owned Vulkan presentation stage and hook notifications |
+| OptiScaler/shaders/dlssnr/precompile/dlssnr_finished_color_Shader_Vk.spv | Vulkan build of the existing finished-picture colour shader |
+| OptiScaler/shaders/dlssnr/precompile/dlssnr_finished_color_Shader_Vk.h | Embedded Vulkan finished-picture colour shader |
+| tests/nr_dx11_finished_bridge_smoke.cpp | Real-GPU unchanged/edited/skipped copy-back, reuse, format and resize regression |
+| docs/NR-FINISHED-BRIDGES.md | Presentation bridge design, evidence and remaining limitations |

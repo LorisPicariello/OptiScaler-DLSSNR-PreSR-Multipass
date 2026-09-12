@@ -496,6 +496,8 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
         if (cq && (fg == nullptr || !fg->IsActive() || fg->IsPaused()))
             DlssNr::ApplyToFinishedPicture(pSwapChain, cq);
+        else if (isD3D11 && State::Instance().swapchainInteropApi == SwapchainInteropApi::None)
+            DlssNr::ApplyToFinishedPictureDx11(pSwapChain);
 
         // Draw overlay
         MenuOverlayDx::Present(pSwapChain, SyncInterval, Flags, pPresentParameters, pDevice, hWnd, isUWP);

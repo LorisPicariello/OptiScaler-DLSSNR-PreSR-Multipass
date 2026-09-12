@@ -595,7 +595,7 @@ struct ModelVk::Impl
         const bool rayReconstruction = frame.RayReconstruction;
         auto& cfg = *Config::Instance();
 
-        if (cfg.DlssNrDeferredDlss.value_or_default() && !rayReconstruction)
+        if (cfg.DlssNrDeferredDlss.value_or_default() && !rayReconstruction && !frame.FinishedPicture)
         {
 
             if (!warnedDeferred)
@@ -607,8 +607,8 @@ struct ModelVk::Impl
             return false;
         }
 
-        if (cfg.DlssNrFinishedPicture.value_or_default())
-            return false; // finished-picture composition requires a native D3D12 swapchain
+        if (cfg.DlssNrFinishedPicture.value_or_default() && !frame.FinishedPicture)
+            return false; // the presentation stage owns this mode
 
         if (!cfg.DlssNrEnabled.value_or_default())
             return false;
@@ -975,6 +975,9 @@ struct ModelVk::Impl
                      linearHdr ? "linear HDR" : "already tone-mapped", gameSaysHdr ? "set" : "clear",
                      (int) colour->Resource.ImageViewInfo.Format, depthInverted ? "inverted" : "normal");
         }
+
+        if (frame.WhitePointOverride > 0.0f)
+            whitePoint = frame.WhitePointOverride;
 
         auto encode = DlssNr_Common::MakeConstants(DlssNrMode_Encode, width, height, whitePoint, linearHdr, cfg);
         encode.GuideWidth = guideWidth;
