@@ -1,9 +1,14 @@
 # NR integration and compatibility prerequisites
 
 The NR contribution keeps the API handoffs needed for its supported routes. Independent KCD2
-driver-query/waitable-swapchain changes and Streamline active-plugin rebinding are separate
-compatibility work; they are not part of the NR contribution.
+driver-query/waitable-swapchain changes and Vulkan overlay/FG policy are separate compatibility
+work. Streamline active-plugin binding remains a prerequisite for installed driver overrides.
 
+- Streamline feature functions are resolved through the active interposer after device binding.
+  NVIDIA driver overrides can initialize a different plugin from the bundled DLL even with
+  application OTA disabled. Calling the bundled Reflex export then crashes during startup.
+  The installed-runtime regression is `tests/streamline_active_plugin_smoke.cpp`; it reproduces
+  the old access violation and checks the active Reflex call without launching a game.
 - D3D11 saved bindings retain COM references through restoration. D3D12/Vulkan bridges replace
   optional exposure/reactive inputs with the correct API resource or null before dispatch, then
   restore the game's values. This prevents a foreign-API pointer reaching a D3D12 consumer.
