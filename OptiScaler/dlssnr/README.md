@@ -32,10 +32,17 @@ Vulkan supports its own finished-picture route under the constraints in
 [NR-FINISHED-BRIDGES.md](../../docs/NR-FINISHED-BRIDGES.md).
 `DeferredDLSS` generates a signed edit before SR, processes it through a private DLSS, FSR 2.2,
 FidelityFX or XeSS context, and composes it after the game's SR or RR+SR, or at presentation when `FinishedPicture` is enabled.
-The private context always performs SR without RR. The legacy `ResidualAcrossRR` key aliases this
-unified route; its separate accumulator has been removed. Its backend contract carries
+With DLSS selected, native DX12 RR inputs can select a private RR context; other supported
+inputs use private SR. The legacy `ResidualAcrossRR` key aliases this unified route. Source-RR
+frames accumulate the signed edit at input resolution using game motion vectors before private
+upscaling. See [private RR](../../docs/NR-PRIVATE-RR.md). Its backend contract carries
 explicit guide states, dimensions and camera metadata; it does not change the game-facing
 backend factory. Deferred private SR and exposure scanning use D3D12, including its bridges.
+
+**Matched residual + DLSS** is a separate enlargement option for reduced-resolution NR after
+the game's upscaler or on the finished picture. It enlarges the model's matched edit using
+private DLSS SR, then adds it to the full-resolution original. It does not use private RR.
+See [enlargement and supported placements](../../docs/NR-DLSS-ENLARGEMENT.md).
 
 ## Source map
 
@@ -64,8 +71,9 @@ solely to reduce line count would add shader-build dependencies without changing
 
 D3D12 records completion markers for NR-owned GPU work. Texture/model retirement waits for
 completion and discarded command recordings are tracked separately. CPU frame counts only
-coordinate logical frames. If teardown cannot prove outstanding work complete, it abandons the
-still-referenced owner instead of freeing resources the GPU may use. Deferred generations and
+coordinate logical frames. Replaced owners remain registered until their recordings and GPU
+work finish, then are reclaimed. Unresolved work at final teardown is retained rather than
+freeing resources the GPU may use. Deferred generations and
 finished-picture slots retain their own completion markers/fences.
 
 Vulkan drains the device before replacing model resources or filter pipelines. Creation events
