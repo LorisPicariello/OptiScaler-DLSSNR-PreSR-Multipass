@@ -49,12 +49,15 @@ struct NVNGXProxy {
     struct ScopedFeatureCreationTrace {};
     static inline HMODULE module = nullptr;
     static inline const wchar_t* srDirectory = nullptr;
+    static inline bool initialized = false;
     static bool InitDx12(ID3D12Device* device) {
+        if (initialized) return true;
         using Init = NVSDK_NGX_Result(*)(unsigned long long,const wchar_t*,ID3D12Device*,NVSDK_NGX_Version,const NVSDK_NGX_FeatureCommonInfo*);
         auto init = (Init)GetProcAddress(module,"NVSDK_NGX_D3D12_Init_Ext");
         const wchar_t* paths[] = { srDirectory };
         NVSDK_NGX_FeatureCommonInfo info {}; info.PathListInfo.Path=paths; info.PathListInfo.Length=1;
-        return init && init(useRr ? 0x5F83393 : 0x24480451,L".",device,NVSDK_NGX_Version_API,&info)==NVSDK_NGX_Result_Success;
+        initialized = init && init(useRr ? 0x5F83393 : 0x24480451,L".",device,NVSDK_NGX_Version_API,&info)==NVSDK_NGX_Result_Success;
+        return initialized;
     }
 #define FN(alias,name) static auto alias(){return (decltype(&name))GetProcAddress(module,#name);}
     FN(D3D12_AllocateParameters,NVSDK_NGX_D3D12_AllocateParameters)
