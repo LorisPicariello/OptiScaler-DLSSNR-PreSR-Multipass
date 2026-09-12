@@ -349,11 +349,15 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
     LOG_FUNC();
 
     VkSwapchainCreateInfoKHR nrCreateInfo = *pCreateInfo;
-    VkSurfaceCapabilitiesKHR capabilities {};
-    if (_PD && vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_PD, pCreateInfo->surface, &capabilities) == VK_SUCCESS)
-        nrCreateInfo.imageUsage |= capabilities.supportedUsageFlags &
-                                  (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-    pCreateInfo = &nrCreateInfo;
+    const bool prepareNr = Config::Instance()->DlssNrEnabled.value_or_default();
+    if (prepareNr)
+    {
+        VkSurfaceCapabilitiesKHR capabilities {};
+        if (_PD && vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_PD, pCreateInfo->surface, &capabilities) == VK_SUCCESS)
+            nrCreateInfo.imageUsage |= capabilities.supportedUsageFlags &
+                                      (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        pCreateInfo = &nrCreateInfo;
+    }
     ScopedVulkanCreatingSC scopedVulkanCreatingSC {};
     VkResult result = VK_SUCCESS;
     {
@@ -364,7 +368,8 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
     if (result == VK_SUCCESS && device != VK_NULL_HANDLE && pCreateInfo != nullptr && *pSwapchain != VK_NULL_HANDLE &&
         !State::Instance().vulkanSkipHooks)
     {
-        DlssNr::FinishedVkSwapchain(device, *pSwapchain, *pCreateInfo);
+        if (prepareNr)
+            DlssNr::FinishedVkSwapchain(device, *pSwapchain, *pCreateInfo);
         State::Instance().screenWidth = static_cast<float>(pCreateInfo->imageExtent.width);
         State::Instance().screenHeight = static_cast<float>(pCreateInfo->imageExtent.height);
 

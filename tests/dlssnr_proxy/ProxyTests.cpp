@@ -2,6 +2,31 @@
 #include "../../OptiScaler/dlssnr/DlssNr_Proxy.cpp"
 #include "../../OptiScaler/dlssnr/DlssNr_Status.cpp"
 #include "../../OptiScaler/upscalers/ShaderPipeline_Dx12.h"
+#include "../../OptiScaler/dlssnr/DlssNr_HoldParameters_Dx12.h"
+
+// NGX tests substitute completion only; nr_gpu_lifetime_smoke exercises real D3D12 fences.
+struct DlssNr::GpuLifetime::Impl
+{
+    bool pending = false;
+    std::vector<std::function<void()>> retired;
+};
+DlssNr::GpuLifetime::GpuLifetime() : impl(std::make_unique<Impl>()) {}
+DlssNr::GpuLifetime::~GpuLifetime() { Collect(); }
+void DlssNr::GpuLifetime::Record(ID3D12GraphicsCommandList*) { impl->pending = true; }
+void DlssNr::GpuLifetime::Submitted(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*) {}
+void DlssNr::GpuLifetime::ResetRecording(ID3D12CommandList*) { impl->pending = false; Collect(); }
+void DlssNr::GpuLifetime::Retire(std::function<void()> destroy)
+{
+    impl->retired.push_back(std::move(destroy));
+    Collect();
+}
+void DlssNr::GpuLifetime::Collect()
+{
+    if (impl->pending) return;
+    for (auto& destroy : impl->retired) destroy();
+    impl->retired.clear();
+}
+bool DlssNr::GpuLifetime::Idle() { return !impl->pending; }
 
 // NVIDIA's DX11 table accepts bridge resources through void*, but ignores DX12 setters.
 struct Dx11Parameters : Mock::Params
@@ -72,6 +97,8 @@ int main()
         assert(run() == NVSDK_NGX_Result_Success && evaluated);
     assert(Mock::releases == 0 && Mock::destructions == 0);
     assert(run() == NVSDK_NGX_Result_Success && evaluated);
+    assert(Mock::releases == 0 && Mock::destructions == 0); // CPU epochs are not completion.
+    proxy.ResetRecording(&commands);
     assert(Mock::releases == 1 && Mock::destructions == 1);
 
     // A real NGX failure reaches the caller and stays latched until an explicit retry.
@@ -90,9 +117,11 @@ int main()
     assert(run() == NVSDK_NGX_Result_Success && !evaluated);
     assert(run() == NVSDK_NGX_Result_Success && evaluated);
 
+    proxy.ResetRecording(&commands);
     proxy.Release();
     assert(Mock::handles.empty());
     assert(Mock::allocations == Mock::destructions);
+    proxy.ResetRecording(&commands);
     proxy.Release(); // Idempotent shutdown.
     assert(Mock::allocations == Mock::destructions);
 
@@ -122,10 +151,21 @@ int main()
         assert(run() == (unsigned int) Mock::evaluateResult && !evaluated);
         Mock::evaluateResult = NVSDK_NGX_Result_Success;
         assert(runOther() == NVSDK_NGX_Result_Success && evaluated);
+        proxy.ResetRecording(&commands);
         proxy.Release();
         assert(Mock::handles.size() == 1);
         assert(runOther() == NVSDK_NGX_Result_Success && evaluated);
+        other.ResetRecording(&commands);
     }
+    assert(Mock::handles.empty() && Mock::allocations == Mock::destructions);
+
+    // Release is safe even when called while creation commands remain unsubmitted.
+    assert(run() == NVSDK_NGX_Result_Success && !evaluated);
+    proxy.Release();
+    assert(Mock::handles.size() == 1);
+    for (int frame = 0; frame < 100; ++frame) proxy.AdvanceEpoch(++epoch);
+    assert(Mock::handles.size() == 1);
+    proxy.ResetRecording(&commands);
     assert(Mock::handles.empty() && Mock::allocations == Mock::destructions);
 
     // Clearing an older owner must not erase the current shader's menu snapshot.

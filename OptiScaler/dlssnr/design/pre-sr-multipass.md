@@ -1,67 +1,31 @@
-# Pre-SR placement and persistent multipass
+# Pre-SR placement and multipass
 
-This experimental branch adds two opt-in controls to the `[DlssNr]` section:
+`RunBeforeSR` selects an owned color input before SR, including combined RR+SR. Post-SR is the
+default. Invalid pre-SR active rectangles select the ordinary post-SR fallback where possible.
+Color/output composition requires an origin-zero rectangle; depth and motion have independent
+valid rectangles and origins. See [padded color](../../../docs/PADDED-PRESR.md).
 
-- `RunBeforeSR=true` runs Neural Rendering on the colour input immediately before Super Resolution.
-  The default is `false`, preserving the v0.2.0 post-upscale seam. Originally Ray
-  Reconstruction/DLSSD was forced to stay post-upscale; the v0.7.4 unification lifted that, and
-  `RunBeforeSR` now applies to combined RR+SR too — see "Across-RR residual" below for why the
-  naive combination is weak and what `ResidualAcrossRR` does about it.
-- `Passes=N` selects one to three sequential model layers. The default is `1`.
-- `Pass2Preset`, `Pass2Style`, `Pass3Preset`, and `Pass3Style` optionally select a different built-in
-  profile for later layers. `auto` inherits pass 1. These are profiles inside one model runtime, not
-  separate model DLLs.
+Each layer owns a persistent NGX feature and temporal history. `Passes` selects the count;
+`UnlockPasses` enables additional layers up to the module limit. Later layers inherit the base
+profile unless overridden, with local tone defaulting to zero. A failed extra layer leaves the
+ready contiguous prefix active rather than reusing another layer's temporal history.
 
-## Multipass lifetime and data flow
+The codec encodes once. Pass zero reads that immutable base and writes output A. Subsequent
+layers alternate A/B. Composition applies the final answer minus the original base once, so
+color/transfer controls are not compounded across layers.
 
-Every layer owns a persistent NGX feature and temporal history. A missing feature is created in one
-submission epoch and remains pending until that epoch changes; no Neural Rendering feature is
-evaluated on the command-list recording that created it. Native DX12 uses the wrapped Present count,
-while the DX11/Vulkan bridges supply their post-submit frame counter. At most one extra feature is
-created per submitted frame. A failed extra creation is latched and the ready contiguous prefix
-remains active, rather than reusing the main feature or retrying every frame.
+Profile, placement, format and working-size changes rebuild the affected model resources.
+D3D12 GPU markers protect model creation readiness and retirement; logical submission epochs
+coordinate Before/After pairing but do not establish GPU completion. Vulkan uses a creation
+event and drains the device before replacing owned model resources.
 
-Preset and style are read when a layer's feature is created. Pass 1 uses `Preset` and `Style`; later
-passes inherit those values unless their override is set. Changing an active layer's profile parks the
-whole generation for deferred release and rebuilds it through the same one-feature-per-submission
-sequence. Changing an inactive layer does not disturb pass 1; its profile is read when that layer is
-later enabled.
+## Across-RR residual
 
-The frame is encoded once. Its base proxy remains immutable while model answers ping-pong through two
-same-format, same-size resources:
+`ResidualAcrossRR` with pre-SR placement generates an edit while preserving RR's original Color
+input. A signed residual history is reprojected through the active motion-vector rectangle and
+accumulated before composition at the post-RR seam. Pairing requires the producing command list,
+parameters and output identity; resets and failed dispatches invalidate the residual.
+See [the residual contract](../../../docs/RESIDUAL-ACROSS-RR.md).
 
-`base -> A -> B -> A` (as needed for one, two, or three layers)
-
-The final answer is composed once against the immutable base. This keeps matched-residual transfer
-cumulative (`final - base`) without compounding colour/transfer settings. Local tone is applied by the
-first model layer only. A camera cut resets every active layer; a newly created extra layer is also
-reset on its first evaluation.
-
-Features and scratch resources are parked for deferred release on tuning, raster, format, placement,
-or pass-count changes so in-flight frame-generation work cannot retain freed objects.
-
-## Resource-state rules
-
-Post-SR output uses the existing output-arrival state. Pre-SR colour arrives and is returned as a
-non-pixel shader resource. If Color has no UAV flag, composition writes to an owned scratch texture and
-copies back instead of binding an illegal UAV.
-
-## Guardrails
-
-- Pass count is clamped to `1..3`; historical testing found later layers converged while cost and
-  artifacts continued to grow.
-- The driver-proxy backend remains single-pass and logs the effective fallback.
-- Origin-zero padded or max-sized Color allocations are copied to an active-sized UAV texture before
-  encode/model/resolve, then only the edited active rectangle is copied back. The game's padding and
-  resource state are preserved. The compact texture shares the scratch set's deferred retirement;
-  changes in active resolution rebuild NR features/history as usual. No shader or guide-coordinate
-  resampling is introduced by the crop. The extra copies are inside NR's GPU timing interval.
-- Non-zero colour offsets, partial/out-of-bounds active sizes and unsupported texture layouts still
-  fall back post-SR. Both absent active-size values retain the resource-size interpretation.
-- Placement is part of the rebuild key even when pre/post surfaces happen to share dimensions and
-  format (for example DLAA).
-- Working scales from 25% through 200% remain supported; the ping-pong resources use model-work size.
-
-## Across-RR residual (experimental)
-
-See [the maintained integration notes](../../../docs/RESIDUAL-ACROSS-RR.md) for the private colour resolve, signed temporal history, guarded post-RR composition, and validation limits.
+The separate deferred private-upscaler path applies only to supported SR routes and has its own
+history/generation ownership. See [deferred NR](../../../docs/DEFERRED-NR-DLSS.md).

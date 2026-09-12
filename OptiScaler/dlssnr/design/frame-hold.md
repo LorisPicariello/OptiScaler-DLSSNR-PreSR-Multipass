@@ -1,113 +1,18 @@
-# Frame hold — freeze the NR input so settings can be A/B'd on one frame
+# Frame hold
 
-Status: design, then implement (design-doc-first per DEVELOPMENT.md). D3D12 first; native Vulkan a
-follow-up.
+D3D12 NR can freeze its input while model and composition settings change. Ordinary hold owns
+copies of the input color and required guides, restores the original NGX parameter values after
+evaluation, and leaves the game's original resources owned by the game. The color codec also
+keeps a native color snapshot for repeated composition. Releasing hold resumes live inputs.
 
-## The problem
+The exposure snapshot travels with the held image, so changing light in the running game cannot
+change the held comparison. Live exposure sampling is disabled while using that snapshot.
+Resource shape or placement changes invalidate the held inputs. A reset command list discards
+an unsubmitted hold capture. Owned snapshots retire through the owner's GPU-completion tracker.
 
-Every comparison so far has been confounded because the scene moves between captures (the reversible
-proxy shots were literally different times of day). You cannot tell a setting's effect from the
-scene's when both change at once. Side-by-side/wipe compare only shows NR-on vs NR-off at the *current*
-settings — it cannot compare two *settings*.
+Finished-picture hold owns one clean presentation snapshot per feature, independently of the
+rotating swapchain buffers and presentation slots. Its queue fence protects reuse. See
+[finished-picture routes](../../../docs/NR-FINISHED-BRIDGES.md).
 
-## The idea
-
-A **Hold** toggle. On, it freezes the input to the Neural Rendering pass; while held, changing any of
-our downstream settings (paper white, detail/colour strength, reversible mode, NR preset/style,
-highlight guard, transfer) re-runs the model + composition on the SAME frozen frame, so the only thing
-that moves is the setting. Hide the menu and it stays held (it is a config flag the pass reads). Untoggle
-to resume. This is the base for later A/B tooling — style sweeps, slider sweeps, a two-version wipe.
-
-## What freezes, and where
-
-The pass reads the upscaler's colour output, encodes it to a proxy the model sees, keeps an untouched
-copy, runs the model, and composes. The freeze point is the **raw colour the encode reads**, captured
-once at hold-on into a persistent texture; while held the encode reads that copy instead of the live
-output. Because both the proxy AND the untouched `keep` derive from the encode's source, freezing there
-keeps them consistent (freezing the proxy alone would be wrong — settings must still re-encode).
-
-Also frozen at hold-on:
-- **The white point.** Snapshot the resolved white point and use it while held. This is the key
-  constraint the user identified: the scan/meter/game-exposure MEASURES the white point live every
-  frame, so if it keeps running while held it drifts and changes the held picture for a reason other
-  than the setting under test. So in hold mode the snapshot is used for rendering. (In v1 the meter still dispatches; its value is
-simply ignored while held, so the picture is stable even though the menu's live exposure readout may
-keep moving. Skipping the dispatch is a later refinement -- the rendered result is already correct.)
-- **Model history** (v2, not in v1). Ideally reset each held frame so the frozen input is judged
-  identically every frame. v1 does NOT reset: the input is identical each frame so the model converges
-  to a steady picture, and a setting change morphs to the new look over ~3-5 frames rather than
-  snapping. Fine for A/B; snapping is a later refinement.
-
-## What is impossible / does not work in hold (be honest about the limits)
-
-- **Live white-point measurement.** The rendered white point holds the snapshot; the meter keeps
-  running but its value is ignored, so the menu's live exposure/scan readout may still move while the
-  picture does not.
-- **DLSS SR / upscaler presets, FSR/XeSS choice, and anything UPSTREAM of this pass.** We hold the
-  upscaler's *output*; the upscaler is not re-run, so changing its preset changes nothing on a held
-  frame. Re-running a temporal upscaler on one frozen frame degenerates (no history/motion), so it is
-  out of scope. Hold-frame is for DOWNSTREAM (our) settings.
-- **The game's own post-process, tonemapper, and UI/HUD.** They run after this pass on the live
-  present, so the HUD and any game post-effect keep updating over the frozen scene. Only the
-  NR-composited scene content holds.
-- **Temporal behaviour (ghosting, accumulation).** Guides are effectively static, so anything that
-  only shows in motion cannot be evaluated held.
-
-## Menu (the Compare category)
-
-There is no "Compare" section today — the compare controls live under "Inspect". Create a **Compare**
-`SeparatorText` and MOVE the existing compare controls into it (Compare mode, split, zoom, swap, tags),
-then add the **Hold frame** toggle at its top. Debug view moves under Compare with the on-screen
-compare tools; "Inspect" keeps the frame-capture tool. This
-category is where future A/B tooling accretes.
-
-## Config / persistence
-
-`DlssNrHoldFrame` (bool, default false). Not really a persisted preference — it is a live testing
-toggle — but it goes through the normal round-trip for consistency. It also wants a keybind (like NR
-enable) so it can be held/released without opening the menu; wire it to the existing keybind system in
-a follow-up if the flag alone is not enough.
-
-## Guards (per DEVELOPMENT.md)
-
-- Default off ⇒ byte-identical: the held texture is not allocated and the encode reads the live output
-  exactly as now.
-- The held texture is allocated on the transition to held and released/parked on hold-off; it is
-  rebuilt if the output's size/format changes while held (same rule as the guide clones).
-- Inert when NR is off.
-- Passthrough unaffected (the freeze is on the encode's source, ahead of the passthrough branch).
-
-## Scope of the original implementation
-
-- v1 (shipped): D3D12 path — freeze colour + white point; the Compare category + moved settings + the
-  Hold toggle. Adversarially reviewed (pass barriers/lifetime + menu) before deploy.
-- v2 (follow-ups): reset model history each held frame (snap instead of morph); freeze depth + motion
-  guides too (fully clean, camera-independent); native Vulkan hold; skip the meter dispatch while held;
-  a keybind; a two-version wipe (hold A, change setting, wipe against the held A).
-
-## Early-generation correction (September 2026)
-
-This revision extends the original implementation described above. On the shared DX12 path,
-including DX11 upscalers using its bridge, early generation now snapshots colour, depth,
-motion vectors and optional exposure before NR and SR. Each subsequent evaluate copies that
-same snapshot into the current input resources, preserving their identities and arrival states.
-Jitter, motion scale, exposure, frame interval and active regions also hold their captured values;
-the caller's parameters are restored after evaluation, including early returns. SR and NR receive
-a reset while held, and SR receives one reset when returning to live input. This is for still-image
-tuning, not judging temporal reconstruction quality. Snapshot allocations exist only after hold-on.
-
-Snapshots recapture on route, input/output shape or input-presence changes. Discarding the
-unsubmitted capture command list invalidates the snapshot. Model setting changes retain the held
-inputs so tuning can re-run on the same frame. Held NR uses its saved white point rather than live
-GPU exposure. Deferred generation accepts Hold frame, but still rejects Compare/Debug/mask preview.
-
-For early generation applied to the finished picture, one clean presentation texture is held
-per NR owner, rather than one per rotating slot. Each residual is applied to that same clean
-image. Queue fences protect its reuse and replacement. The previous held residual can bridge
-model warm-up frames while its slot is still valid. Full late NR and normal post-SR hold retain
-their existing paths. Earlier paths can still show changes from downstream game effects/HUD.
-
-Inspect NR is now a separate collapsible heading outside the pipeline chart. Native Vulkan hold
-is still unimplemented, and carry-across-RR still rejects hold. Additional RR-specific guides,
-reactive masks and alternative upscalers have not been validated with this snapshot mechanism.
-Automated proxy and GPU-copy regressions passed; BG3 and other games require user testing.
+Hold is a comparison aid, not a simulation pause: the game can continue updating while the
+NR input stays frozen. Native Vulkan does not implement the D3D12 input-hold path.

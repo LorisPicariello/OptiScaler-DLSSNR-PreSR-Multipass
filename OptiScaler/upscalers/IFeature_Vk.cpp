@@ -20,7 +20,6 @@ bool IFeature_Vk::Init(VkInstance InInstance, VkPhysicalDevice InPD, VkDevice In
     if (result)
     {
 
-        NeuralRendering = std::make_unique<DlssNr_Vk>("Neural Rendering", InDevice, InPD);
         OutputScaler = std::make_unique<OS_Vk>("Output Scaling", InDevice, InPD, (TargetWidth() < DisplayWidth()));
         RCAS = std::make_unique<RCAS_Vk>("RCAS", InDevice, InPD);
         Magnifier = std::make_unique<Magnifier_Vk>("Magnifier", InDevice, InPD);
@@ -38,6 +37,9 @@ bool IFeature_Vk::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InP
         LOG_ERROR("Not inited!");
         return false;
     }
+
+    if (!NeuralRendering && Config::Instance()->DlssNrEnabled.value_or_default() && !IsWithDx12())
+        NeuralRendering = std::make_unique<DlssNr_Vk>("Neural Rendering", Device, PhysicalDevice);
 
     if (Config::Instance()->OverrideSharpness.value_or_default())
         _sharpness = Config::Instance()->Sharpness.value_or_default();

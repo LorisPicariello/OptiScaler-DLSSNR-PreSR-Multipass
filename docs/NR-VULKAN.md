@@ -18,8 +18,13 @@ A/B benchmark or a gameplay validation of this combined branch.
   working resolution, supersampling filters, skin controls and reversible composition are shared
   with D3D12. A GPU event keeps model creation separate from evaluation.
 - Vulkan-to-D3D12 bridges inherit D3D12 NR and do not dispatch native NR again.
-- Exposure readback is available in native Vulkan. Finished-picture scheduling, exposure scanning
-  and deferred private-DLSS composition are D3D12 facilities.
+- Exposure readback and finished-picture presentation are available in native Vulkan. Exposure
+  scanning and deferred private-upscaler composition use D3D12, including its bridges.
+  See [finished-picture routes](NR-FINISHED-BRIDGES.md).
+
+Enable NR before creating the Vulkan device and swapchain so optional extensions and transfer
+usage can be prepared. Enabling it later may require restarting the game. Resources remain lazy
+once that preparation is available.
 
 For a native Vulkan starting point:
 

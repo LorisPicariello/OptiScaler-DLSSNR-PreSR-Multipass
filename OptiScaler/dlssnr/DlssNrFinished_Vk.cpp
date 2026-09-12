@@ -188,6 +188,11 @@ struct FinishedVk::Impl
                     s.pending = false;
             return;
         }
+        if (screen.device != device || !screen.handle)
+        {
+            Say("Enable NR before creating the Vulkan swapchain; restart the game if NR was enabled during play.");
+            return;
+        }
         if (Config::Instance()->DlssNrRunBeforeSr.value_or_default() ||
             Config::Instance()->DlssNrDeferredDlss.value_or_default())
         {

@@ -7,7 +7,9 @@
 #include <nvsdk_ngx_params.h>
 
 struct ID3D12Device {};
-struct ID3D12GraphicsCommandList {};
+struct ID3D12CommandList {};
+struct ID3D12GraphicsCommandList : ID3D12CommandList {};
+using UINT = unsigned int;
 struct ID3D12CommandQueue
 {
 };

@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <vector>
 #include <cstring>
-#include "../OptiScaler/with_dx12/dx11_finished_picture.h"
+#include "../OptiScaler/dlssnr/DlssNr_FinishedPictureBridge_Dx11.h"
 using Microsoft::WRL::ComPtr;
 static void Check(HRESULT hr)
 {

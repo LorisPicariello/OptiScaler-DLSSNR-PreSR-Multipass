@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -444,7 +444,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="upscaler_time\UpscalerTime_Vk.h" />
     <ClInclude Include="SysUtils.h" />
     <ClInclude Include="with_dx12\dx11_with_dx12.h" />
-    <ClInclude Include="with_dx12\dx11_finished_picture.h" />
+    <ClInclude Include="dlssnr\DlssNr_FinishedPictureBridge_Dx11.h" />
     <ClInclude Include="with_dx12\with_dx12.h" />
     <ClInclude Include="with_dx12\dx11_with_dx12_sc.h" />
     <ClInclude Include="misc\HiddenWindow.h" />
@@ -881,5 +881,56 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="upscalers\ShaderPipeline_Vk.h" />
     <ClInclude Include="dlssnr\DlssNrPipeline_Vk.h" />
     <ClCompile Include="dlssnr\DlssNr_Status.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="dlssnr\DlssNr.h" />
+    <ClInclude Include="dlssnr\DlssNr_Capture.h" />
+    <ClCompile Include="dlssnr\DlssNr_GpuLifetime.cpp" />
+    <ClInclude Include="dlssnr\DlssNr_GpuLifetime.h" />
+    <ClInclude Include="dlssnr\DlssNr_HoldParameters_Dx12.h" />
+    <ClCompile Include="dlssnr\DlssNr_MenuBlend.cpp" />
+    <ClCompile Include="dlssnr\DlssNr_MenuInput.cpp" />
+    <ClCompile Include="dlssnr\DlssNr_MenuModel.cpp" />
+    <ClCompile Include="dlssnr\DlssNr_MenuOverlay.cpp" />
+    <ClInclude Include="dlssnr\DlssNr_MenuOverlay.h" />
+    <ClCompile Include="dlssnr\DlssNr_MenuPlacement.cpp" />
+    <ClInclude Include="dlssnr\DlssNr_MenuSections.h" />
+    <ClCompile Include="dlssnr\DlssNr_Pipeline_Dx12.cpp" />
+    <ClInclude Include="dlssnr\DlssNr_Pipeline_Dx12.h" />
+    <ClInclude Include="dlssnr\DlssNr_Upscaler.h" />
+    <ClInclude Include="dlssnr\DlssNr_VkExtensions.h" />
+    <ClInclude Include="dlssnr\DlssNrFeature_Dx12.h" />
+    <ClInclude Include="dlssnr\DlssNrFeature_Vk_Internal.h" />
+    <ClCompile Include="dlssnr\DlssNrFeature_Vk_Model.cpp" />
+    <ClCompile Include="dlssnr\DlssNrFeature_Vk_Resources.cpp" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_GpuTime.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_Guides.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_ResidualPair.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_SeamClock.h" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Upscaler_Dx12.cpp" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_Upscaler_Dx12.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="dlssnr\DlssNr_ExposureAnchors.cpp" />
+    <ClCompile Include="dlssnr\DlssNr_ExposureReadback.cpp" />
+    <ClInclude Include="dlssnr\DlssNr_ExposureScan_Internal.h" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_DeferredSr.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Evaluate.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Exposure.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_FinishedCompose.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_FinishedQueue.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Hold.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Late.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Resources.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Run.cpp" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_Dx12_State.h" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Status.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Encode.cpp" />
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Models.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="shaders\dlssnr\DlssNr_Dx12_ModelState.h" />
   </ItemGroup>
 </Project>

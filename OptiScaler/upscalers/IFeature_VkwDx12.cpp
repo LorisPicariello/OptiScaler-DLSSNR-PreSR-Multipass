@@ -2071,8 +2071,6 @@ bool IFeature_VkwDx12::Init(VkInstance InInstance, VkPhysicalDevice InPD, VkDevi
     const bool initialised = dx12Feature->Init(_dx11on12Device, Dx12CommandList[0], InParameters);
 
     SetInit(initialised);
-    if (initialised)
-        NeuralRendering = std::make_unique<DlssNr_Vk>("Neural Rendering", InDevice, InPD);
 
     if (Dx12CommandList[0]->Close() == S_OK && Dx12CommandQueue != nullptr)
     {
@@ -2147,6 +2145,10 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
                 parameters->Set(binding.name, binding.resource);
         }
     } restoreParameters { InParameters };
+
+    if (!NeuralRendering && Config::Instance()->DlssNrEnabled.value_or_default() &&
+        Config::Instance()->DlssNrFinishedPicture.value_or_default())
+        NeuralRendering = std::make_unique<DlssNr_Vk>("Neural Rendering", VulkanDevice, VulkanPhysicalDevice);
 
     if (NeuralRendering && Config::Instance()->DlssNrFinishedPicture.value_or_default())
     {

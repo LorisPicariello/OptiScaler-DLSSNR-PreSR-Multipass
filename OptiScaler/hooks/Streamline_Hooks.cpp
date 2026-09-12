@@ -310,11 +310,8 @@ static sl::Result dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::
                                         const sl::DLSSGOptions* options)
 {
     state.numFramesActuallyPresented = 1; // TODO: can do better
-    if (state.structVersion >= 2)
-    {
-        state.numFramesToGenerateMax = 1;
-        state.bIsVsyncSupportAvailable = sl::Boolean::eTrue;
-    }
+    state.numFramesToGenerateMax = 1;
+    state.bIsVsyncSupportAvailable = sl::Boolean::eTrue;
     state.estimatedVRAMUsageInBytes = 300 * 1024 * 1024;
 
     return sl::Result::eOk;
@@ -1140,7 +1137,19 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         newOptions.dynamicTargetFrameRate = Config::Instance()->FGDLSSGFramerateTargetDMFG.value();
     }
 
-    applyMenuDlssgInterlock(newOptions, dlssgPotentiallyActive);
+    if (state.swapchainApi == API::Vulkan)
+    {
+        // Only matters for Vulkan, DX doesn't use this delay
+        if (dlssgPotentiallyActive && !MenuOverlayBase::IsVisible())
+            state.delayMenuRenderBy = 10;
+
+        if (MenuOverlayBase::IsVisible())
+        {
+            newOptions.mode = sl::DLSSGMode::eOff;
+            newOptions.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
+            ReflexHooks::setDlssgFrameCount(0);
+        }
+    }
 
     LOG_TRACE("DLSSG Modified Mode: {}", magic_enum::enum_name(newOptions.mode));
 
@@ -1151,20 +1160,16 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         {
             sl::DLSSGState localState {};
             sl::DLSSGOptions localOptions {};
-            if (o_slDLSSGGetState(viewport, localState, &localOptions) == sl::Result::eOk)
+            if (o_slDLSSGGetState(viewport, localState, &localOptions) == sl::Result::eOk &&
+                localState.numFramesToGenerateMax > 0 && localState.numFramesToGenerateMax < 6)
             {
-                if (localState.numFramesToGenerateMax > 0 && localState.numFramesToGenerateMax < 6)
-                {
-                    state.dlssgMfgMax = localState.numFramesToGenerateMax;
-                    LOG_TRACE("Saving original numFramesToGenerateMax: {}", state.dlssgMfgMax.value());
+                state.dlssgMfgMax = localState.numFramesToGenerateMax;
+                LOG_TRACE("Saving original numFramesToGenerateMax: {}", state.dlssgMfgMax.value());
 
-                    // Volatile: the clamp holds for this run and leaves the ini setting alone.
-                    if (Config::Instance()->FGDLSSGOverrideInterpolationCount.has_value() &&
-                        Config::Instance()->FGDLSSGOverrideInterpolationCount.value() > state.dlssgMfgMax.value())
-                    {
-                        Config::Instance()->FGDLSSGOverrideInterpolationCount.set_volatile_value(
-                            state.dlssgMfgMax.value());
-                    }
+                if (Config::Instance()->FGDLSSGOverrideInterpolationCount.has_value() &&
+                    Config::Instance()->FGDLSSGOverrideInterpolationCount.value() > state.dlssgMfgMax.value())
+                {
+                    Config::Instance()->FGDLSSGOverrideInterpolationCount = state.dlssgMfgMax.value();
                 }
             }
         }
@@ -1177,20 +1182,6 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
                 newOptions.numFramesToGenerate = overrideCount;
             else if (!enableDynamicMode)
                 newOptions.mode = sl::DLSSGMode::eOff;
-        }
-    }
-    else if (dlssgPotentiallyActive && Config::Instance()->FGDLSSGOverrideInterpolationCount.has_value() &&
-             Config::Instance()->FGDLSSGOverrideInterpolationCount.value() != 0)
-    {
-        // Once. slDLSSGSetOptions runs per frame.
-        static bool warnedNoMfg = false;
-
-        if (!warnedNoMfg)
-        {
-            warnedNoMfg = true;
-            LOG_WARN("Interpolation count override ignored: Streamline {}.{}.{}, multi frame generation "
-                     "needs 2.7.1",
-                     state.streamlineVersion.major, state.streamlineVersion.minor, state.streamlineVersion.patch);
         }
     }
 
@@ -1211,8 +1202,6 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
 
         // We might be feeding a newer struct to an older SL but that seems to work just fine for this Get function
         result = o_slDLSSGGetState(viewport, dynamic_cast<sl::DLSSGState&>(newState), options);
-        if (result != sl::Result::eOk)
-            return result;
 
         // Copy back data to game's struct
         memcpy(&state, &newState, 56); // struct ver 1 size
@@ -1237,8 +1226,6 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
     else
     {
         result = o_slDLSSGGetState(viewport, state, options);
-        if (result != sl::Result::eOk)
-            return result;
         State::Instance().dlssgGameDMFGSupported = state.bIsDynamicMFGSupported == sl::eTrue;
     }
 
@@ -1255,20 +1242,16 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
         {
             sl::DLSSGState localState {};
             sl::DLSSGOptions localOptions {};
-            if (o_slDLSSGGetState(viewport, localState, &localOptions) == sl::Result::eOk)
+            if (o_slDLSSGGetState(viewport, localState, &localOptions) == sl::Result::eOk &&
+                localState.numFramesToGenerateMax > 0 && localState.numFramesToGenerateMax < 6)
             {
-                if (localState.numFramesToGenerateMax > 0 && localState.numFramesToGenerateMax < 6)
-                {
-                    optiState.dlssgMfgMax = localState.numFramesToGenerateMax;
-                    LOG_TRACE("Saving original numFramesToGenerateMax: {}", optiState.dlssgMfgMax.value());
+                optiState.dlssgMfgMax = localState.numFramesToGenerateMax;
+                LOG_TRACE("Saving original numFramesToGenerateMax: {}", optiState.dlssgMfgMax.value());
 
-                    // Volatile: the clamp holds for this run and leaves the ini setting alone.
-                    if (Config::Instance()->FGDLSSGOverrideInterpolationCount.has_value() &&
-                        Config::Instance()->FGDLSSGOverrideInterpolationCount.value() > optiState.dlssgMfgMax.value())
-                    {
-                        Config::Instance()->FGDLSSGOverrideInterpolationCount.set_volatile_value(
-                            optiState.dlssgMfgMax.value());
-                    }
+                if (Config::Instance()->FGDLSSGOverrideInterpolationCount.has_value() &&
+                    Config::Instance()->FGDLSSGOverrideInterpolationCount.value() > optiState.dlssgMfgMax.value())
+                {
+                    Config::Instance()->FGDLSSGOverrideInterpolationCount = optiState.dlssgMfgMax.value();
                 }
             }
         }
@@ -1297,9 +1280,7 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
             state.numFramesActuallyPresented = 1;
         }
 
-        // Struct version 1 ends at 56 bytes, ahead of this field.
-        if (originalStructVersion >= 2)
-            state.numFramesToGenerateMax = 1;
+        state.numFramesToGenerateMax = 1;
 
         LOG_DEBUG("Status: {}, numFramesActuallyPresented: {}", magic_enum::enum_name(state.status),
                   state.numFramesActuallyPresented);
@@ -1746,21 +1727,6 @@ void StreamlineHooks::updateDlssgOptions()
     {
         LOG_FUNC();
         hkslDLSSGSetOptions(lastDlssgViewport, lastDlssgOptions);
-    }
-}
-
-void StreamlineHooks::applyMenuDlssgInterlock(sl::DLSSGOptions& options, bool potentiallyActive)
-{
-    auto& state = State::Instance();
-    if (state.swapchainApi != API::Vulkan && !state.menuOverlayIsVulkan)
-        return;
-    if (potentiallyActive && !MenuOverlayBase::IsVisible())
-        state.delayMenuRenderBy = 10;
-    if (MenuOverlayBase::IsVisible())
-    {
-        options.mode = sl::DLSSGMode::eOff;
-        options.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
-        ReflexHooks::setDlssgFrameCount(0);
     }
 }
 

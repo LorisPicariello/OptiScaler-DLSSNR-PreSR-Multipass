@@ -50,7 +50,11 @@ class Context
     // Retires the current feature and clears the failure latch without immediately freeing GPU work.
     void RetryAfterFailure();
 
-    // Releases current and retired features and parameter maps at shutdown, after GPU work is complete.
+    void Submitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
+    void ResetRecording(ID3D12CommandList* commands);
+
+    // Retires ownership; destruction occurs only after recordings are discarded and GPU work completes.
+    // Unresolved ownership is abandoned if this context is destroyed.
     void Release();
 };
 } // namespace Proxy

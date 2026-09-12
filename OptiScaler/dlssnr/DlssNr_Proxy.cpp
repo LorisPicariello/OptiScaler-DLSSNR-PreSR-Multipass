@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "DlssNr_Proxy.h"
+#include "DlssNr_GpuLifetime.h"
 
 #include <Logger.h>
 #include <proxies/NVNGX_Proxy.h>
@@ -26,12 +27,6 @@ struct ProxyState
     ID3D12Device* device = nullptr;
     bool failed = false;
     bool reset = true;
-};
-
-struct RetiredState
-{
-    ProxyState state;
-    unsigned int framesLeft = 32;
 };
 
 void DestroyState(ProxyState& state)
@@ -92,11 +87,9 @@ namespace Proxy
 struct Context::Impl
 {
     ProxyState state;
-    std::vector<RetiredState> retiredStates;
+    DlssNr::GpuLifetime lifetime;
     void RetireState();
     void TickRetired(uint64_t epoch);
-    bool haveEpoch = false;
-    uint64_t lastEpoch = 0;
     unsigned int Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, unsigned int width,
                          unsigned int height, const Settings& settings, uint64_t submissionEpoch, bool* ready);
     void Release();
@@ -111,31 +104,11 @@ struct Context::Impl
 void Context::Impl::RetireState()
 {
     if (state.feature != nullptr || state.params != nullptr)
-        retiredStates.push_back({ state });
-
+        lifetime.Retire([retired = state]() mutable { DestroyState(retired); });
     state = {};
 }
 
-void Context::Impl::TickRetired(uint64_t epoch)
-{
-    if (haveEpoch && lastEpoch == epoch)
-        return;
-    haveEpoch = true;
-    lastEpoch = epoch;
-    // Match the existing DLSS-NR resource retirement window. Feature creation/evaluation
-    // records GPU work, so replacing a feature must not destroy it on that same frame.
-    for (size_t i = 0; i < retiredStates.size();)
-    {
-        if (--retiredStates[i].framesLeft > 0)
-        {
-            ++i;
-            continue;
-        }
-
-        DestroyState(retiredStates[i].state);
-        retiredStates.erase(retiredStates.begin() + i);
-    }
-}
+void Context::Impl::TickRetired([[maybe_unused]] uint64_t epoch) { lifetime.Collect(); }
 
 bool Context::Available()
 {
@@ -146,12 +119,8 @@ bool Context::Available()
 
 void Context::Impl::Release()
 {
-    DestroyState(state);
-
-    for (auto& retired : retiredStates)
-        DestroyState(retired.state);
-
-    retiredStates.clear();
+    RetireState();
+    lifetime.Collect();
 }
 
 void Context::RetryAfterFailure() { _impl->RetireState(); }
@@ -187,6 +156,7 @@ unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12De
     {
         SetCreationParameters(state.params, settings, width, height);
 
+        lifetime.Record(cmdList);
         const auto created =
             NVNGXProxy::D3D12_CreateFeature()(cmdList, (NVSDK_NGX_Feature) 18, state.params, &state.feature);
 
@@ -275,6 +245,7 @@ unsigned int Context::Impl::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device
     SetFloat(params, "DLSSNR.SkinStructureStrength", settings.skinStructure);
     SetUInt(params, "DLSSNR.UseAutoMask", settings.autoMask ? 1u : 0u);
 
+    lifetime.Record(cmdList);
     const auto result = NVNGXProxy::D3D12_EvaluateFeature()(cmdList, state.feature, params, nullptr);
 
     if (result == NVSDK_NGX_Result_Success)
@@ -293,6 +264,11 @@ unsigned int Context::Impl::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device
 Context::Context() : _impl(std::make_unique<Impl>()) {}
 Context::~Context() { _impl->Release(); }
 void Context::Release() { _impl->Release(); }
+void Context::Submitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
+{
+    _impl->lifetime.Submitted(queue, count, lists);
+}
+void Context::ResetRecording(ID3D12CommandList* commands) { _impl->lifetime.ResetRecording(commands); }
 
 unsigned int Context::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, unsigned int width,
                               unsigned int height, const Settings& settings, uint64_t submissionEpoch, bool* ready)
