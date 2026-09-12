@@ -1,5 +1,13 @@
 #include "pch.h"
 #include "DlssNr_Dx12_State.h"
+#include <dlssnr/DlssNr_StreamlinePicture.h>
+
+void DlssNr_Dx12::ApplyStreamlineFinished(IDXGISwapChain* swapchain, ID3D12Resource* picture, ID3D12CommandQueue* queue)
+{
+    std::lock_guard lock(_state->mutex);
+    if (swapchain && picture && queue)
+        _state->ApplyFinishedColor(picture, queue, _state->FinishedColorSpace(swapchain, picture->GetDesc().Format), true);
+}
 
 auto DlssNr_Dx12::State::FinishedPictureResetCommandList(ID3D12CommandList* cmd) -> void
 {
@@ -109,6 +117,10 @@ auto DlssNr_Dx12::State::ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D1
 {
     std::lock_guard<std::recursive_mutex> lock(mutex);
     if (!swapchain || !queue)
+        return;
+    // Native Streamline owns an app-facing buffer set. Its before-present hook handles NR.
+    // Editing the underlying display swapchain here races/is overwritten by DLSSG's own copies.
+    if (DlssNr::StreamlinePicture::RenderQueue(swapchain))
         return;
     LateContext::ComPtr<IDXGISwapChain3> sc;
     LateContext::ComPtr<ID3D12Resource> color;

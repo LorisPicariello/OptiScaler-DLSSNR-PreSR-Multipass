@@ -1,7 +1,8 @@
 #include "pch.h"
 #include "DlssNr_Dx12_State.h"
 
-auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12CommandQueue* queue, DXGI_COLOR_SPACE_TYPE colorSpace) -> bool
+auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12CommandQueue* queue, DXGI_COLOR_SPACE_TYPE colorSpace,
+                                          bool gameFrameHandoff) -> bool
 {
     if (!Config::Instance()->DlssNrFinishedPicture.value_or_default() ||
         !Config::Instance()->DlssNrEnabled.value_or_default())
@@ -36,7 +37,8 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     {
         if (!slot.pending || !slot.submitted)
             continue;
-        if (epoch < slot.frame.SubmissionEpoch || epoch - slot.frame.SubmissionEpoch > 1)
+        // Native FG's internal Present counter includes generated frames and is not an app-frame identity.
+        if (!gameFrameHandoff && (epoch < slot.frame.SubmissionEpoch || epoch - slot.frame.SubmissionEpoch > 1))
         {
             slot.pending = false;
             late.reset = true;
@@ -345,8 +347,8 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
                                                                              : "Applying NR to the finished picture.")
                                                                       : "Preparing NR for the finished picture.");
     if (ran && (++late.successes == 1 || late.successes % 300 == 0))
-        LOG_INFO("DLSS-NR finished picture: {} frames, {}x{}, OptiScaler FG {}, same producer queue {}", late.successes, desc.Width, desc.Height,
+        LOG_INFO("DLSS-NR finished picture: {} frames, {}x{}, OptiScaler FG {}, same producer queue {}, game-frame handoff {}", late.successes, desc.Width, desc.Height,
                  ::State::Instance().currentFG && ::State::Instance().currentFG->IsActive() &&
-                     !::State::Instance().currentFG->IsPaused(), slot.producerQueue.Get() == realQueue);
+                     !::State::Instance().currentFG->IsPaused(), slot.producerQueue.Get() == realQueue, gameFrameHandoff);
     return ran;
 }

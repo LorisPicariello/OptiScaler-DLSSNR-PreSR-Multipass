@@ -473,6 +473,12 @@ void ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue
     if (activeNrOwner)
         activeNrOwner->ApplyFinished(swapchain, queue);
 }
+void ApplyToStreamlinePicture(IDXGISwapChain* swapchain, ID3D12Resource* picture, ID3D12CommandQueue* queue)
+{
+    std::lock_guard lock(nrOwnersMutex);
+    if (activeNrOwner)
+        activeNrOwner->ApplyStreamlineFinished(swapchain, picture, queue);
+}
 void ApplyToFinishedPictureDx11(IDXGISwapChain* swapchain)
 {
     std::lock_guard lock(nrOwnersMutex);
