@@ -14,6 +14,12 @@ The original integration branch remains available. The last helper-based cleanup
 
 Removed: fork-specific Ada/Ampere/Turing MFG unlockers, patched capability ceilings, external-FG ownership mode, residual-FG interpolation, approximate cameras, its missing-motion two-frame fallback, and optional FG runtime downloads/distribution. NVFP4 remains absent. Legacy keys are ignored on load and removed on save; ordinary FG/NR/user keys remain intact.
 
+The optional `HdrTransfer` NR setting adds measured luminance-response transfer for early
+generation with finished-picture HDR application. It is disabled by default and reuses the
+shared finished-colour shader and owning presentation slots. Its implementation and synthetic
+validation are described in [NR-COMPATIBILITY.md](NR-COMPATIBILITY.md#experimental-hdr-brightness-transfer).
+This is an NR composition change, not a compatibility or frame-generation change.
+
 ## Retained compatibility changes
 
 These are separable benefits, retained intentionally rather than presented as NR algorithms:

@@ -38,6 +38,8 @@ enum DlssNrMode : uint32_t
 // 4096 values is also small enough to read back and take a real percentile of on the CPU, rather
 // than approximating one on the GPU.
 constexpr uint32_t kDlssNrMeterGrid = 64;
+// Finished-colour shader's exposure-normalised brightness response, -12..12 stops.
+constexpr uint32_t kDlssNrHdrCurveBins = 48;
 
 // What the composition shader reads.
 //

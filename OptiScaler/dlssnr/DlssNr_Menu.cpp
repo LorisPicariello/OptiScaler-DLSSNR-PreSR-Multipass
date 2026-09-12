@@ -129,9 +129,9 @@ static void RenderPlacement(Config* config, float menuResScale)
         const auto feature = State::Instance().currentFeature;
         if (State::Instance().swapchainApi == API::Vulkan)
             ImGui::TextWrapped("%s", DlssNr::FinishedVkStatus().c_str());
-        else if (feature &&
-            (feature->Api() != API::DX12 || (feature->IsWithDx12() && State::Instance().swapchainApi != API::DX11 &&
-                                             State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx11wDx12)))
+        else if (feature && (feature->Api() != API::DX12 ||
+                             (feature->IsWithDx12() && State::Instance().swapchainApi != API::DX11 &&
+                              State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx11wDx12)))
             ImGui::TextWrapped("This option needs DirectX 12 or a DirectX 11 upscaler marked w/Dx12.");
         else
             ImGui::TextWrapped("%s", DlssNr::FinishedPictureStatus().c_str());
@@ -1078,7 +1078,8 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::SetTooltip(
                 "Apply NR after the game has finished its lighting and effects. This may help with green noise.\n"
                 "Works with DirectX 12, the DirectX 11 bridge, or Vulkan, including SDR, HDR10 and scRGB.\n"
-                "It can also change the HUD and menus. Enable Generate model before upscale to generate the changes earlier.");
+                "It can also change the HUD and menus. Enable Generate model before upscale to generate the changes "
+                "earlier.");
 
         ImGui::SameLine(toggleRight);
         bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
@@ -1088,10 +1089,12 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip(
-                finished ? "For the finished picture, use Generate model before upscale to generate the changes earlier."
-                         : "Compute NR at input resolution, upscale its changes with DLSS, then apply them after SR.\n"
-                           "Experimental: may flicker and adds GPU cost. Requires DLSS on DX12 or its bridges; does not "
-                           "support RR.\nForces Generate model before upscale on. Disable Hold frame, Compare and Debug view.");
+                finished
+                    ? "For the finished picture, use Generate model before upscale to generate the changes earlier."
+                    : "Compute NR at input resolution, upscale its changes with DLSS, then apply them after SR.\n"
+                      "Experimental: may flicker and adds GPU cost. Requires DLSS on DX12 or its bridges; does not "
+                      "support RR.\nForces Generate model before upscale on. Disable Hold frame, Compare and Debug "
+                      "view.");
         ImGui::Spacing();
 
         PipelineUi::View view;

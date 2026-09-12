@@ -87,3 +87,40 @@ The shared DX12 pipeline now preserves the parameter table's supported resource 
 type when redirecting colour/output and restoring temporary bindings. Regression tests
 cover native and bridge tables; the production helpers were also checked against NVIDIA's
 real DX11 table. These checks establish buffer routing, not final in-game image quality.
+
+## Experimental HDR brightness transfer
+
+With **Apply NR to the finished picture** and **Generate model before upscale** enabled,
+select the chart's **Apply NR edit** stage and enable **Match HDR brightness response
+(experimental)**. `[DlssNr] HdrTransfer=false` is the default. The option is active on the
+DX12 finished-picture path (including the DX11 bridge), with scene-linear input and an HDR10
+or scRGB output. Native Vulkan still does not support the underlying early-generation/late-
+application route. SDR output and non-linear scene input use the existing transfer.
+
+The producer copies the clean SR image into its fence-protected presentation slot. At
+presentation, the finished-colour shader compares 1,024 corresponding samples with the clean
+reference, normalising scene luminance by that frame's pre-exposure. It fits 48 overlapping
+half-stop bins over -12..12 stops, using local regression followed by outlier rejection.
+Small curve textures ping-pong within each reusable GPU slot. Consistent curves are smoothed;
+resets, resize, colour-space changes, large exposure/response changes or stale slots invalidate
+history. There is no CPU readback or additional NR model evaluation.
+
+Application estimates `finished + T(edited scene) - T(clean scene)` for luminance and retains
+the existing RGB transfer's chromaticity. Missing coverage, inconsistent fits, non-monotonic
+responses and pixels that disagree with the fit fall back to the existing bounded transfer.
+Neutral residuals preserve the finished image exactly. This is a luminance approximation,
+not recovery of the game's full colour grading, local tone mapping, bloom or HUD composition.
+It assumes the scene's RGB luminance convention matches the existing NR working colour space.
+
+Enabling it adds a full-size clean reference per used in-flight slot, tiny FP32 curve textures,
+a GPU analysis dispatch and extra composition reads. Actual game cost is unmeasured. Turning
+it off avoids the extra recording and releases the optional resources when their slots are
+safely reused or the owner is destroyed. Shader modes 0..5 remain stable; modes 6..9 contain
+the optional fit/application, with matching regenerated DXIL and SPIR-V.
+
+`tests/nr_finished_color_smoke.cpp` executes the shader on WARP. A known HDR shoulder test
+reduced total absolute luminance error from 603.58 to 9.37 across the selected ramp samples;
+this is synthetic evidence, not an in-game quality claim. Tests also cover flat-scene and
+local mismatch fallback, neutral identity, pre-exposure invariance, history smoothing/reset,
+HDR10 application and the existing HDR/SDR conversion checks. Game-specific colour accuracy,
+rapid lighting changes, HUD contamination and real GPU overhead remain to be tested in-game.

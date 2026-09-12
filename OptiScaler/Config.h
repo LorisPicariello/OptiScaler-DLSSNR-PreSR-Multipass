@@ -261,6 +261,8 @@ class Config
     // Off preserves the v0.2.0 post-upscale placement.
     CustomOptional<bool> DlssNrRunBeforeSr { false };
     CustomOptional<bool> DlssNrFinishedPicture { false };
+    // Fit the scene-to-finished HDR luminance response for early-generated residuals. Opt-in.
+    CustomOptional<bool> DlssNrHdrTransfer { false };
     // Generate NR before SR, upscale its signed contribution with a private DLSS feature,
     // and apply it after the game's upscaler. Takes precedence over RunBeforeSR; opt-in.
     CustomOptional<bool> DlssNrDeferredDlss { false };
