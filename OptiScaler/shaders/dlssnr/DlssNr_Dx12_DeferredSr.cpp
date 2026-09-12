@@ -509,6 +509,13 @@ auto DlssNr_Dx12::State::DeferredSrContext::After(ID3D12GraphicsCommandList* cmd
 auto DlssNr_Dx12::State::DeferredSrContext::ReleaseResources() -> void
 {
     Cancel();
+    if (owner.lifetime.Idle())
+    {
+        // Also covers discarded recordings whose GPU timestamp was never written.
+        current.reset();
+        retired.clear();
+        return;
+    }
     if (current)
         retired.push_back(std::move(current));
     Collect();

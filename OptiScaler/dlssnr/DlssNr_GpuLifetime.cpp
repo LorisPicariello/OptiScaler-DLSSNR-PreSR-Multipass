@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <vector>
 #include <wrl/client.h>
+#include <atomic>
+#include <objbase.h>
 
 namespace DlssNr
 {
@@ -47,7 +49,7 @@ struct GpuLifetime::Impl
     struct Recording
     {
         ID3D12CommandList* commands = nullptr; // identity only, never dereferenced
-        bool open = true;
+        std::atomic_bool open { true };
         bool signalFailed = false;
         // Only the latest value on each queue is needed, including when the list is replayed.
         std::vector<Completion> completions;
@@ -58,6 +60,36 @@ struct GpuLifetime::Impl
                    std::all_of(completions.begin(), completions.end(), [](const auto& c) { return c.Complete(); });
         }
     };
+    // Command lists can be released instead of Reset. A private IUnknown notification
+    // closes that recording without retaining/dereferencing the command list itself.
+    struct RecordingWatch final : IUnknown
+    {
+        std::atomic<ULONG> references { 1 };
+        std::weak_ptr<Recording> recording;
+        explicit RecordingWatch(const std::shared_ptr<Recording>& use) : recording(use) {}
+        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override
+        {
+            if (!out) return E_POINTER;
+            *out = nullptr;
+            if (iid != __uuidof(IUnknown)) return E_NOINTERFACE;
+            *out = static_cast<IUnknown*>(this);
+            AddRef();
+            return S_OK;
+        }
+        ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
+        ULONG STDMETHODCALLTYPE Release() override
+        {
+            const auto remaining = --references;
+            if (!remaining)
+            {
+                if (auto use = recording.lock()) use->open = false;
+                delete this;
+            }
+            return remaining;
+        }
+    };
+    GUID watchKey {};
+    bool watchKeyValid = SUCCEEDED(CoCreateGuid(&watchKey));
     using Uses = std::vector<std::shared_ptr<Recording>>;
     struct Retired { Uses uses; std::function<void()> destroy; };
     Uses recordings;
@@ -99,6 +131,13 @@ void GpuLifetime::Record(ID3D12GraphicsCommandList* commands)
         if (use->open && use->commands == commands) return;
     auto use = std::make_shared<Impl::Recording>();
     use->commands = commands;
+    if (impl->watchKeyValid)
+    {
+        auto* watch = new Impl::RecordingWatch(use);
+        if (FAILED(commands->SetPrivateDataInterface(impl->watchKey, watch)))
+            watch->recording.reset(); // Failure must not pretend the recording was discarded.
+        watch->Release();
+    }
     impl->recordings.push_back(std::move(use));
 }
 void GpuLifetime::Submitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)

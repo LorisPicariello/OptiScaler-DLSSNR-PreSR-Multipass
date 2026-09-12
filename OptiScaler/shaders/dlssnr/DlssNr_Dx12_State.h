@@ -255,6 +255,7 @@ struct DlssNr_Dx12::State
             bool Idle() const { return !everRecorded || completed[lastMarker] != 0; }
             ~Generation()
             {
+                DlssNr_Dx12::Retire(std::move(codec));
                 upscaler.reset(); // Completion protects all four backend histories.
                 if (readback && completed)
                     readback->Unmap(0, nullptr);

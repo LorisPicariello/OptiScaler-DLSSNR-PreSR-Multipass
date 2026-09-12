@@ -368,5 +368,5 @@ IFeature_Dx12::~IFeature_Dx12()
     OutputScaler.reset();
     RCAS.reset();
     Bias.reset();
-    NeuralRendering.reset();
+    DlssNr_Dx12::Retire(std::move(NeuralRendering));
 }

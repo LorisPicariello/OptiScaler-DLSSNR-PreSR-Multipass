@@ -147,6 +147,40 @@ try
         life.Collect();
         expect(released == 6 && life.Idle(), "multiple queue dependencies did not complete");
     }
+    {
+        // Some engines dispose of command lists instead of resetting them. Destruction
+        // must close recording ownership, while the submission fence still protects GPU use.
+        DlssNr::GpuLifetime life;
+        for (int cycle = 0; cycle < 64; ++cycle)
+        {
+            ComPtr<ID3D12GraphicsCommandList> temporary;
+            check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+                                            IID_PPV_ARGS(&temporary)));
+            check(temporary->Close());
+            life.Record(temporary.Get());
+            life.Retire([&] { ++released; });
+            temporary.Reset();
+            life.Collect();
+            expect(life.Idle() && released == 7 + cycle, "destroyed unsubmitted list retained ownership");
+        }
+        ComPtr<ID3D12GraphicsCommandList> temporary;
+        check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+                                        IID_PPV_ARGS(&temporary)));
+        check(temporary->Close());
+        life.Record(temporary.Get());
+        check(queue->Wait(gate.Get(), 4));
+        ID3D12CommandList* pending[] { temporary.Get() };
+        queue->ExecuteCommandLists(1, pending);
+        life.Submitted(queue.Get(), 1, pending);
+        life.Retire([&] { ++released; });
+        temporary.Reset();
+        life.Collect();
+        expect(released == 70 && !life.Idle(), "destroyed list released in-flight work");
+        check(gate->Signal(4));
+        wait();
+        life.Collect();
+        expect(released == 71 && life.Idle(), "destroyed submitted list retained completed work");
+    }
     std::puts("NR GPU lifetime smoke passed");
     return 0;
 }

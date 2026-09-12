@@ -106,6 +106,7 @@ auto DlssNr_Dx12::State::LateContext::Acquire(ID3D12GraphicsCommandList* cmd) ->
 
 auto DlssNr_Dx12::State::LateContext::Arm(Slot& slot, ID3D12GraphicsCommandList* cmd) -> void
 {
+    owner.lifetime.Record(cmd);
     slot.producer = cmd;
     ID3D12GraphicsCommandList* real = nullptr;
     if (Util::CheckForRealObject(__FUNCTION__, cmd, (IUnknown**) &real))

@@ -2,6 +2,7 @@
 #include <dlssnr/PassProfiles.h>
 
 #include <set>
+#include <list>
 #include <wrl/client.h>
 #include <resource_tracking/ResTrack_Dx12.h>
 #include <dlssnr/DlssNr_FinishedPictureBridge_Dx11.h>
@@ -51,6 +52,35 @@ namespace
 {
 std::recursive_mutex nrOwnersMutex;
 std::vector<DlssNr_Dx12*> nrOwners;
+// Only unresolved work at process teardown is intentionally retained. During the session
+// retired owners stay registered for submission/reset callbacks until they can be reclaimed.
+auto& RetiredNrOwners()
+{
+    static auto* owners = new std::list<std::unique_ptr<DlssNr_Dx12>>;
+    return *owners;
+}
+unsigned nrNotificationDepth = 0;
+void CollectRetiredNrOwners()
+{
+    static bool collecting = false;
+    if (collecting || nrNotificationDepth) return;
+    collecting = true;
+    auto& owners = RetiredNrOwners();
+    for (auto it = owners.begin(); it != owners.end();)
+    {
+        if (!(*it)->ReadyToDestroy()) { ++it; continue; }
+        auto finished = std::move(*it);
+        it = owners.erase(it);
+        finished.reset(); // May enqueue a child codec; list iterators remain valid.
+        LOG_INFO("DLSS-NR: reclaimed retired GPU owner; {} waiting", owners.size());
+    }
+    collecting = false;
+}
+struct NrNotificationScope
+{
+    NrNotificationScope() { ++nrNotificationDepth; }
+    ~NrNotificationScope() { --nrNotificationDepth; CollectRetiredNrOwners(); }
+};
 DlssNr_Dx12* activeNrOwner = nullptr;
 void ActivateNrOwner(DlssNr_Dx12* owner)
 {
@@ -131,6 +161,11 @@ DlssNr_Dx12::DlssNr_Dx12(std::string InName, ID3D12Device* InDevice)
     }
 
     _init = InitHeaps(InDevice, _frameHeaps, DLSSNR_NUM_OF_HEAPS);
+    if (_init)
+        ResTrack_Dx12::HookLateNrQueue(InDevice); // Observe feature-creation submissions too, before the first Run.
+    // Codec-only instances never call Dispatch/ProcessSeam, but still record GPU work.
+    std::lock_guard lock(nrOwnersMutex);
+    nrOwners.push_back(this);
 }
 
 bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
@@ -195,6 +230,35 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
     const UINT dispatchHeight = (InConstants.Height + _numThreadsY - 1) / _numThreadsY;
     InCmdList->Dispatch(dispatchWidth, dispatchHeight, 1);
 
+    return true;
+}
+
+void DlssNr_Dx12::Retire(std::unique_ptr<DlssNr_Dx12> owner)
+{
+    if (!owner) return;
+    std::lock_guard lock(nrOwnersMutex);
+    if (activeNrOwner == owner.get()) activeNrOwner = nullptr;
+    DlssNr::ClearStatus(owner.get());
+    {
+        std::lock_guard stateLock(owner->_state->mutex);
+        owner->_state->late.Cancel();
+        // These lists belong to NR and cannot be replayed after retirement. Closing
+        // their logical recordings retains every submitted fence, without resetting GPU allocators.
+        for (auto& slot : owner->_state->late.slots)
+            if (slot.commands) owner->_state->FinishedPictureResetCommandList(slot.commands.Get());
+    }
+    RetiredNrOwners().push_back(std::move(owner));
+    LOG_INFO("DLSS-NR: retaining retired GPU owner until recordings finish; {} waiting", RetiredNrOwners().size());
+}
+
+bool DlssNr_Dx12::ReadyToDestroy()
+{
+    std::lock_guard lock(_state->mutex);
+    if (!_state->lifetime.Idle()) return false;
+    for (auto& model : _state->nr.models)
+        if (!model.Idle()) return false;
+    for (const auto& slot : _state->late.slots)
+        if (slot.submitted && !_state->late.Finished(slot)) return false;
     return true;
 }
 
@@ -450,20 +514,26 @@ namespace DlssNr
 void FinishedPictureResetCommandList(ID3D12CommandList* cmd)
 {
     std::lock_guard lock(nrOwnersMutex);
-    for (auto* owner : nrOwners)
+    NrNotificationScope notification;
+    const auto owners = nrOwners;
+    for (auto* owner : owners)
         owner->ResetFinishedCommands(cmd);
 }
 void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
 {
     std::lock_guard lock(nrOwnersMutex);
-    for (auto* owner : nrOwners)
+    NrNotificationScope notification;
+    const auto owners = nrOwners;
+    for (auto* owner : owners)
         owner->SubmitFinishedCommands(queue, count, lists);
 }
 bool WaitForFinishedPicture()
 {
     std::lock_guard lock(nrOwnersMutex);
+    NrNotificationScope notification;
     bool ready = true;
-    for (auto* owner : nrOwners)
+    const auto owners = nrOwners;
+    for (auto* owner : owners)
         ready = owner->WaitFinished() && ready;
     return ready;
 }

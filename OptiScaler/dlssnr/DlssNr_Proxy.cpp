@@ -269,6 +269,7 @@ void Context::Submitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList
     _impl->lifetime.Submitted(queue, count, lists);
 }
 void Context::ResetRecording(ID3D12CommandList* commands) { _impl->lifetime.ResetRecording(commands); }
+bool Context::Idle() { return _impl->lifetime.Idle(); }
 
 unsigned int Context::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, unsigned int width,
                               unsigned int height, const Settings& settings, uint64_t submissionEpoch, bool* ready)

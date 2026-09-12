@@ -52,6 +52,7 @@ class Context
 
     void Submitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
     void ResetRecording(ID3D12CommandList* commands);
+    bool Idle();
 
     // Retires ownership; destruction occurs only after recordings are discarded and GPU work completes.
     // Unresolved ownership is abandoned if this context is destroyed.

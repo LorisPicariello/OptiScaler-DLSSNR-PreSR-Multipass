@@ -66,6 +66,8 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
   public:
     DlssNr_Dx12(std::string InName, ID3D12Device* InDevice);
     ~DlssNr_Dx12();
+    static void Retire(std::unique_ptr<DlssNr_Dx12> owner);
+    bool ReadyToDestroy();
 
     // The pass. Resources in, and nothing read from anywhere the caller cannot see.
     //
