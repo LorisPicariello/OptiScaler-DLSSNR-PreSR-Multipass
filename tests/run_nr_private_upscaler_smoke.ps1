@@ -2,9 +2,11 @@ param(
     [ValidateSet('DLSS','FSR22','FFX','XeSS')][string]$Backend = 'FSR22',
     [string]$Runtime,
     [string]$SrDirectory,
-    [string]$VcVars
+    [string]$VcVars,
+    [switch]$RayReconstruction
 )
 $ErrorActionPreference = 'Stop'
+if ($RayReconstruction -and $Backend -ne 'DLSS') { throw '-RayReconstruction requires -Backend DLSS.' }
 $repo = Split-Path $PSScriptRoot -Parent
 if (!$VcVars) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
@@ -37,6 +39,7 @@ try {
     if ($Backend -eq 'DLSS') {
         if (!$SrDirectory) { throw '-SrDirectory must contain your official nvngx_dlss.dll.' }
         $arguments += (Resolve-Path -LiteralPath $SrDirectory).Path
+        if ($RayReconstruction) { $arguments += '--rr' }
     }
     & "$out/private_smoke.exe" @arguments
     if ($LASTEXITCODE) { throw 'Private adapter GPU smoke failed.' }

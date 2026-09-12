@@ -1,6 +1,9 @@
 #include "pch.h"
 #include "DlssNr_Upscaler_Dx12.h"
 #include <proxies/NVNGX_Proxy.h>
+#include <cstring>
+#include <cmath>
+#include <vector>
 
 #include <dlssnr/DlssNr_Upscaler.h>
 #include <proxies/FfxApi_Proxy.h>
@@ -10,6 +13,65 @@
 
 namespace DlssNr
 {
+namespace
+{
+// NGX RR keys from NVIDIA's nvsdk_ngx_defs_dlssd.h; no additional runtime or SDK dependency.
+constexpr const char* rrKeys[] = { "DLSS.Input.DiffuseAlbedo", "DLSS.Input.SpecularAlbedo",
+    "GBuffer.Normals", "GBuffer.Roughness", "MotionVectorsReflection",
+    "DLSSD.SpecularHitDistance", "DLSSD.DiffuseHitDistance" };
+constexpr const char* rrOffsetPrefixes[] = { "DLSS.Input.DiffuseAlbedo", "DLSS.Input.SpecularAlbedo",
+    "DLSS.Input.Normals", "DLSS.Input.Roughness", nullptr,
+    "DLSSD.SpecularHitDistance", "DLSSD.DiffuseHitDistance" };
+}
+
+PrivateRrInputsDx12 PrivateUpscalerDx12::ReadRrInputs(NVSDK_NGX_Parameter* source, unsigned width, unsigned height)
+{
+    PrivateRrInputsDx12 result;
+    if (!source) return result;
+    source->Get("DLSS.Roughness.Mode", &result.roughnessMode);
+    source->Get("DLSS.Use.HW.Depth", &result.hardwareDepth);
+    for (unsigned i = 0; i < result.guides.size(); ++i)
+    {
+        auto*& resource = result.guides[i].resource;
+        source->Get(rrKeys[i], &resource);
+        if (!resource)
+        {
+            void* untyped = nullptr;
+            source->Get(rrKeys[i], &untyped);
+            resource = static_cast<ID3D12Resource*>(untyped);
+        }
+        if (rrOffsetPrefixes[i])
+        {
+            source->Get((std::string(rrOffsetPrefixes[i]) + ".Subrect.Base.X").c_str(), &result.baseX[i]);
+            source->Get((std::string(rrOffsetPrefixes[i]) + ".Subrect.Base.Y").c_str(), &result.baseY[i]);
+        }
+        if (resource)
+        {
+            const auto desc = resource->GetDesc();
+            if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1 ||
+                desc.Width < UINT64(result.baseX[i]) + width || UINT64(desc.Height) < UINT64(result.baseY[i]) + height)
+                return result;
+        }
+    }
+    void *world = nullptr, *view = nullptr;
+    source->Get("WorldToViewMatrix", &world);
+    source->Get("ViewToClipMatrix", &view);
+    if (world && view)
+    {
+        std::memcpy(result.worldToView.data(), world, sizeof(result.worldToView));
+        std::memcpy(result.viewToClip.data(), view, sizeof(result.viewToClip));
+        result.matrices = std::all_of(result.worldToView.begin(), result.worldToView.end(),
+                                      [](float v) { return std::isfinite(v); }) &&
+                          std::all_of(result.viewToClip.begin(), result.viewToClip.end(),
+                                      [](float v) { return std::isfinite(v); });
+    }
+    result.valid = result.roughnessMode <= 1 && result.hardwareDepth <= 1 &&
+                   result.guides[0].resource && result.guides[1].resource && result.guides[2].resource &&
+                   (result.roughnessMode == 1 || result.guides[3].resource) &&
+                   (result.guides[4].resource || (result.guides[5].resource && result.matrices));
+    return result;
+}
+
 // Only the private NR carrier uses this adapter. Reuse the existing runtime loaders and linked
 // FSR2 backend without entering IFeature's game settings, post-processing, overlay or NR hooks.
 // The owning Generation must wait for its GPU completion marker before destroying this object.
@@ -22,6 +84,8 @@ struct PrivateUpscalerDx12::Impl
     ffxContext ffx = nullptr;
     xess_context_handle_t xess = nullptr;
     unsigned width = 0, height = 0, outWidth = 0, outHeight = 0;
+    bool rayReconstruction = false;
+    unsigned roughnessMode = 0, hardwareDepth = 1;
 
     static void Barrier(ID3D12GraphicsCommandList* cmd, ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
                         D3D12_RESOURCE_STATES after)
@@ -82,6 +146,9 @@ struct PrivateUpscalerDx12::Impl
         const bool highMv = !info.lowResolutionMotion;
         if (backend == PrivateUpscaler::DLSS)
         {
+            rayReconstruction = info.rayReconstruction;
+            roughnessMode = info.roughnessMode;
+            hardwareDepth = info.hardwareDepth;
             if (!NVNGXProxy::InitDx12(device) || !NVNGXProxy::D3D12_AllocateParameters() ||
                 !NVNGXProxy::D3D12_DestroyParameters() || !NVNGXProxy::D3D12_CreateFeature() ||
                 !NVNGXProxy::D3D12_EvaluateFeature() || !NVNGXProxy::D3D12_ReleaseFeature() ||
@@ -99,7 +166,14 @@ struct PrivateUpscalerDx12::Impl
                              (jittered ? NVSDK_NGX_DLSS_Feature_Flags_MVJittered : 0) |
                              (!highMv ? NVSDK_NGX_DLSS_Feature_Flags_MVLowRes : 0);
             p->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, flags);
-            return NVNGXProxy::D3D12_CreateFeature()(cmd, NVSDK_NGX_Feature_SuperSampling, p, &feature) ==
+            if (rayReconstruction)
+            {
+                p->Set("DLSS.Denoise.Mode", 1);
+                p->Set("DLSS.Roughness.Mode", roughnessMode);
+                p->Set("DLSS.Use.HW.Depth", hardwareDepth);
+            }
+            return NVNGXProxy::D3D12_CreateFeature()(cmd, rayReconstruction ? NVSDK_NGX_Feature_RayReconstruction
+                                                                         : NVSDK_NGX_Feature_SuperSampling, p, &feature) ==
                        NVSDK_NGX_Result_Success && feature;
         }
         ScopedSkipSpoofingGlobal skipSpoofing {};
@@ -203,7 +277,17 @@ struct PrivateUpscalerDx12::Impl
         if (!color || !output || !depth || !motion || !exposure ||
             f.width != width || f.height != height || f.outputWidth != outWidth || f.outputHeight != outHeight)
             return false;
-        const PrivateUpscalerResourceDx12 inputs[] = { f.color, f.depth, f.motion, f.exposure };
+        if (rayReconstruction && (!f.rr.valid || f.rr.roughnessMode != roughnessMode ||
+                                   f.rr.hardwareDepth != hardwareDepth)) return false;
+        std::vector<PrivateUpscalerResourceDx12> inputs;
+        auto addInput = [&](PrivateUpscalerResourceDx12 input)
+        {
+            if (input.resource && std::none_of(inputs.begin(), inputs.end(),
+                    [&](auto existing) { return existing.resource == input.resource; })) inputs.push_back(input);
+        };
+        for (auto input : { f.color, f.depth, f.motion, f.exposure }) addInput(input);
+        if (rayReconstruction)
+            for (auto input : f.rr.guides) addInput(input);
         for (auto input : inputs)
             Barrier(cmd, input.resource, input.state, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Barrier(cmd, output, f.output.state, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -227,6 +311,20 @@ struct PrivateUpscalerDx12::Impl
             p->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
             p->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
             p->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
+            if (rayReconstruction)
+            {
+                for (unsigned i = 0; i < f.rr.guides.size(); ++i)
+                {
+                    p->Set(rrKeys[i], f.rr.guides[i].resource);
+                    if (rrOffsetPrefixes[i])
+                    {
+                        p->Set((std::string(rrOffsetPrefixes[i]) + ".Subrect.Base.X").c_str(), f.rr.baseX[i]);
+                        p->Set((std::string(rrOffsetPrefixes[i]) + ".Subrect.Base.Y").c_str(), f.rr.baseY[i]);
+                    }
+                }
+                p->Set("WorldToViewMatrix", f.rr.matrices ? (void*)f.rr.worldToView.data() : nullptr);
+                p->Set("ViewToClipMatrix", f.rr.matrices ? (void*)f.rr.viewToClip.data() : nullptr);
+            }
             result = NVNGXProxy::D3D12_EvaluateFeature()(cmd, feature, p, nullptr) == NVSDK_NGX_Result_Success;
         }
         else if (backend == PrivateUpscaler::FSR22 && fsr2Ready)
@@ -282,6 +380,10 @@ struct PrivateUpscalerDx12::Impl
 };
 PrivateUpscalerDx12::PrivateUpscalerDx12(PrivateUpscaler selected) : impl(std::make_unique<Impl>(selected)) {}
 PrivateUpscalerDx12::~PrivateUpscalerDx12() = default;
+const char* PrivateUpscalerDx12::Name() const
+{
+    return impl->rayReconstruction ? "DLSS RR" : PrivateUpscalerName(impl->backend);
+}
 bool PrivateUpscalerDx12::Init(ID3D12Device* device, ID3D12GraphicsCommandList* cmd,
                                 const PrivateUpscalerCreateDx12& info)
 {

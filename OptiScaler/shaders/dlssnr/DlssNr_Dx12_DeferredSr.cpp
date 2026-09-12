@@ -160,7 +160,16 @@ auto DlssNr_Dx12::State::DeferredSrContext::Before(ID3D12GraphicsCommandList* cm
                      (NVSDK_NGX_DLSS_Feature_Flags_DepthInverted | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
                       NVSDK_NGX_DLSS_Feature_Flags_MVJittered);
     const auto backend = DlssNr::GetPrivateUpscaler(cfg.DlssNrPrivateUpscaler.value_or_default());
+    // Only native DX12 RR parameters contain DX12 material/reflection guides. Bridges
+    // do not transfer these resources, so keep their existing private SR backend.
+    auto rrInputs = backend == DlssNr::PrivateUpscaler::DLSS && rayReconstruction && !interop
+        ? DlssNr::PrivateUpscalerDx12::ReadRrInputs(source, active->width, active->height)
+        : DlssNr::PrivateRrInputsDx12 {};
+    const bool privateRr = rrInputs.valid;
     if (current && (current->rayReconstruction != rayReconstruction ||
+                    current->privateRr != privateRr ||
+                    (privateRr && (current->frame.rr.roughnessMode != rrInputs.roughnessMode ||
+                                   current->frame.rr.hardwareDepth != rrInputs.hardwareDepth)) ||
                     current->finishedPicture != cfg.DlssNrFinishedPicture.value_or_default() ||
                     current->backend != backend || current->device != device || current->queue != ownerQueue ||
                     current->w != active->width ||
@@ -192,6 +201,10 @@ auto DlssNr_Dx12::State::DeferredSrContext::Before(ID3D12GraphicsCommandList* cm
         current->flags = flags;
         current->backend = backend;
         current->rayReconstruction = rayReconstruction;
+        current->privateRr = privateRr;
+        if (backend == DlssNr::PrivateUpscaler::DLSS)
+            LOG_INFO("DLSS-NR private residual upscaler: {} ({})", privateRr ? "DLSS RR" : "DLSS SR",
+                     privateRr ? "game RR guides available" : "game RR guides unavailable for this API/extent");
         current->finishedPicture = cfg.DlssNrFinishedPicture.value_or_default();
         if (!Allocate(*current))
         {
@@ -203,6 +216,15 @@ auto DlssNr_Dx12::State::DeferredSrContext::Before(ID3D12GraphicsCommandList* cm
     else
         device->Release();
     auto& g = *current;
+    g.frame.rr = rrInputs; // Own matrix values before the game's evaluate can rewrite its parameter table.
+    // These guides arrive in the game's NGX readable state. Account for aliases of the basic inputs.
+    const auto rrStates = DlssNr::ResolveInputStates_Dx12(interop);
+    for (auto& guide : g.frame.rr.guides)
+    {
+        if (guide.resource == color) guide.state = rrStates.color;
+        else if (guide.resource == depth) guide.state = rrStates.depth;
+        else if (guide.resource == motion) guide.state = rrStates.motion;
+    }
     if (g.failed)
         return;
     // Native seams have a logical per-evaluate identity. Bridges retain the submitted epoch
@@ -235,11 +257,14 @@ auto DlssNr_Dx12::State::DeferredSrContext::Before(ID3D12GraphicsCommandList* cm
         info.depthInverted = (g.flags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
         info.jitteredMotion = (g.flags & NVSDK_NGX_DLSS_Feature_Flags_MVJittered) != 0;
         info.lowResolutionMotion = (g.flags & NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) != 0;
+        info.rayReconstruction = g.privateRr;
+        info.roughnessMode = g.frame.rr.roughnessMode;
+        info.hardwareDepth = g.frame.rr.hardwareDepth;
         g.upscaler = std::make_unique<DlssNr::PrivateUpscalerDx12>(g.backend);
         if (!g.upscaler->Init(g.device, cmd, info))
         {
             g.failed = true;
-            Say(std::string("private ") + DlssNr::PrivateUpscalerName(g.backend) +
+            Say(std::string("private ") + g.upscaler->Name() +
                 " creation failed (runtime/device/input size); clean SR frame retained");
             return;
         }
@@ -256,7 +281,7 @@ auto DlssNr_Dx12::State::DeferredSrContext::Before(ID3D12GraphicsCommandList* cm
         owner.Barrier(cmd, g.exposure, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         g.createEpoch = submittedEpoch;
-        Say(std::string("private ") + DlssNr::PrivateUpscalerName(g.backend) +
+        Say(std::string("private ") + g.upscaler->Name() +
             " created; waiting for a later submission epoch");
         return;
     }
@@ -442,7 +467,7 @@ auto DlssNr_Dx12::State::DeferredSrContext::After(ID3D12GraphicsCommandList* cmd
     if (!g.upscaler->Evaluate(cmd, g.frame))
     {
         g.failed = true;
-        Say(std::string("private ") + DlssNr::PrivateUpscalerName(g.backend) +
+        Say(std::string("private ") + g.upscaler->Name() +
             " evaluation failed; clean SR frame retained");
         return;
     }
@@ -457,7 +482,7 @@ auto DlssNr_Dx12::State::DeferredSrContext::After(ID3D12GraphicsCommandList* cmd
             owner.FormatCanHoldLinearHdr(g.outputFormat);
         if (owner.late.CaptureResidual(cmd, pair.output, g.residualOutput, pair.scale, sceneLinear,
                                        UInt(source, NVSDK_NGX_Parameter_Reset) != 0))
-            Say("running: model before SR; changes saved for the finished picture");
+            Say(std::string("running: model -> private ") + g.upscaler->Name() + "; changes saved for the finished picture");
         else
         {
             g.reset = true;
@@ -490,7 +515,7 @@ auto DlssNr_Dx12::State::DeferredSrContext::After(ID3D12GraphicsCommandList* cmd
         owner.Barrier(cmd, pair.output, D3D12_RESOURCE_STATE_COPY_DEST, arrival);
         owner.Barrier(cmd, g.composed, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Say("running: " + std::to_string(g.w) + "x" + std::to_string(g.h) +
-            " contribution -> private " + DlssNr::PrivateUpscalerName(g.backend) + " -> " +
+            " contribution -> private " + g.upscaler->Name() + " -> " +
             std::to_string(g.outW) + "x" + std::to_string(g.outH) +
             "; applied after SR");
     }

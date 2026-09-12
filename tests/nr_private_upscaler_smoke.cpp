@@ -59,10 +59,11 @@ struct NVNGXProxy {
     FN(D3D12_AllocateParameters,NVSDK_NGX_D3D12_AllocateParameters)
     FN(D3D12_DestroyParameters,NVSDK_NGX_D3D12_DestroyParameters)
     static inline unsigned srCreates = 0;
+    static inline bool useRr = false;
     static NVSDK_NGX_Result CreateSr(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Feature id,
                                     NVSDK_NGX_Parameter* parameters, NVSDK_NGX_Handle** handle) {
-        if (id != NVSDK_NGX_Feature_SuperSampling)
-            throw std::runtime_error("Private edit upscaler requested a non-SR NGX feature");
+        if (id != (useRr ? NVSDK_NGX_Feature_RayReconstruction : NVSDK_NGX_Feature_SuperSampling))
+            throw std::runtime_error("Private edit upscaler requested the wrong NGX feature");
         ++srCreates;
         return ((decltype(&NVSDK_NGX_D3D12_CreateFeature))GetProcAddress(module,
             "NVSDK_NGX_D3D12_CreateFeature"))(cmd,id,parameters,handle);
@@ -90,7 +91,8 @@ int wmain(int argc,wchar_t** argv) try {
     expect(argc>=2,"Usage: private_smoke <0 DLSS|1 FSR2|2 FFX|3 XeSS> [runtime DLL] [DLSS SR directory]");
     const auto selected = DlssNr::GetPrivateUpscaler(_wtoi(argv[1]));
     if(selected==DlssNr::PrivateUpscaler::DLSS) {
-        expect(argc==4,"DLSS requires installed nvngx.dll and official SR DLL directory");
+        expect(argc==4 || argc==5,"DLSS requires installed nvngx.dll and official SR/RR DLL directory");
+        NVNGXProxy::useRr = argc == 5 && std::wstring(argv[4]) == L"--rr";
         NVNGXProxy::module=LoadLibraryW(argv[2]); expect(NVNGXProxy::module!=nullptr,"NGX load");
         NVNGXProxy::srDirectory=argv[3];
     }
@@ -127,13 +129,16 @@ int wmain(int argc,wchar_t** argv) try {
     };
     auto carrier=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,w,h), depth=texture(DXGI_FORMAT_R32_FLOAT,w,h),
          motion=texture(DXGI_FORMAT_R16G16_FLOAT,w,h), exposure=texture(DXGI_FORMAT_R32_FLOAT,1,1),
-         output=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh);
+         output=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,ow,oh),
+         albedo=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,w,h),
+         specular=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,w,h),
+         normals=texture(DXGI_FORMAT_R16G16B16A16_FLOAT,w,h);
     ComPtr<ID3D12DescriptorHeap> heap; D3D12_DESCRIPTOR_HEAP_DESC hd {};
-    hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors=4; hd.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors=7; hd.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     check(device->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&heap)));
     UINT stride=device->GetDescriptorHandleIncrementSize(hd.Type);
-    ID3D12Resource* inputs[]={carrier.Get(),depth.Get(),motion.Get(),exposure.Get()};
-    for (UINT i=0;i<4;++i) {
+    ID3D12Resource* inputs[]={carrier.Get(),depth.Get(),motion.Get(),exposure.Get(),albedo.Get(),specular.Get(),normals.Get()};
+    for (UINT i=0;i<7;++i) {
         auto cpu=heap->GetCPUDescriptorHandleForHeapStart(); cpu.ptr+=i*stride;
         device->CreateUnorderedAccessView(inputs[i],nullptr,nullptr,cpu);
     }
@@ -144,9 +149,16 @@ int wmain(int argc,wchar_t** argv) try {
         float v[]={value,value,value,1}; commands->ClearUnorderedAccessViewFloat(gpu,cpu,inputs[i],v,rect?1:0,rect);
     };
     clear(0,0.5f); clear(1,0.5f); clear(2,0.0f); clear(3,1.0f);
+    clear(4,0.5f); clear(5,0.04f);
+    {
+        auto cpu=heap->GetCPUDescriptorHandleForHeapStart(); cpu.ptr+=6*stride;
+        auto gpu=heap->GetGPUDescriptorHandleForHeapStart(); gpu.ptr+=6*stride;
+        float normal[]={0,0,1,1}; commands->ClearUnorderedAccessViewFloat(gpu,cpu,normals.Get(),normal,0,nullptr);
+    }
     // Leave game guides in UAV state; exercise both transition and restoration on every evaluate.
     for (auto* r: {carrier.Get(),exposure.Get()}) barrier(commands.Get(),r,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     DlssNr::PrivateUpscalerCreateDx12 info { w, h, ow, oh, (int)NVSDK_NGX_PerfQuality_Value_MaxPerf };
+    info.rayReconstruction=NVNGXProxy::useRr; info.roughnessMode=1;
     auto feature=std::make_unique<DlssNr::PrivateUpscalerDx12>(selected);
     auto other=std::make_unique<DlssNr::PrivateUpscalerDx12>(selected);
     expect(feature->Init(device.Get(),commands.Get(),info),"First private backend init failed"); submit();
@@ -156,6 +168,27 @@ int wmain(int argc,wchar_t** argv) try {
     f.depth={depth.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
     f.motion={motion.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
     f.width=w; f.height=h; f.outputWidth=ow; f.outputHeight=oh;
+    if (NVNGXProxy::useRr)
+    {
+        NVSDK_NGX_Parameter* source=nullptr; ngx(NVNGXProxy::D3D12_AllocateParameters()(&source));
+        source->Set("DLSS.Roughness.Mode",1u); source->Set("DLSS.Use.HW.Depth",1u);
+        source->Set("DLSS.Input.DiffuseAlbedo",albedo.Get());
+        source->Set("DLSS.Input.SpecularAlbedo",specular.Get());
+        source->Set("GBuffer.Normals",normals.Get());
+        source->Set("MotionVectorsReflection",motion.Get());
+        float matrix[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+        source->Set("WorldToViewMatrix",(void*)matrix); source->Set("ViewToClipMatrix",(void*)matrix);
+        f.rr=DlssNr::PrivateUpscalerDx12::ReadRrInputs(source,w,h);
+        expect(f.rr.valid,"Valid packed RR inputs rejected");
+        matrix[0]=7; expect(f.rr.worldToView[0]==1,"RR matrix was borrowed rather than snapshotted");
+        source->Set("DLSS.Input.Normals.Subrect.Base.X",1u);
+        expect(!DlssNr::PrivateUpscalerDx12::ReadRrInputs(source,w,h).valid,"Out-of-bounds RR guide accepted");
+        source->Set("DLSS.Input.Normals.Subrect.Base.X",0u);
+        source->Set("DLSS.Input.SpecularAlbedo",(ID3D12Resource*)nullptr);
+        expect(!DlssNr::PrivateUpscalerDx12::ReadRrInputs(source,w,h).valid,"Missing RR guide accepted");
+        ngx(NVNGXProxy::D3D12_DestroyParameters()(source));
+        for(auto& guide:f.rr.guides) guide.state=D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {}; UINT64 bytes=0; auto od=output->GetDesc();
     device->GetCopyableFootprints(&od,0,1,0,&footprint,nullptr,nullptr,&bytes);
     D3D12_RESOURCE_DESC bd {}; bd.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER; bd.Width=bytes; bd.Height=1;
@@ -195,7 +228,7 @@ int wmain(int argc,wchar_t** argv) try {
         readback->Unmap(0,nullptr);
     }
     if (selected == DlssNr::PrivateUpscaler::DLSS)
-        expect(NVNGXProxy::srCreates == 2, "Both private contexts must use SuperSampling, never RR");
+        expect(NVNGXProxy::srCreates == 2, "Both private contexts must use the selected NGX feature");
     f.depth.resource=nullptr;
     expect(!feature->Evaluate(commands.Get(),f),"Missing guide was accepted");
     feature.reset(); other.reset(); CloseHandle(event);
@@ -206,6 +239,6 @@ int wmain(int argc,wchar_t** argv) try {
         if(message->Severity<=D3D12_MESSAGE_SEVERITY_ERROR){std::fprintf(stderr,"D3D12: %s\n",message->pDescription);++errors;}
     }
     expect(errors==0,"D3D12 validation errors");
-    std::printf("PASS: production %s adapter, two live contexts, neutral/signed 1080p -> 4K carrier\n",DlssNr::PrivateUpscalerName(selected));
+    std::printf("PASS: production %s adapter, two live contexts, neutral/signed 1080p -> 4K carrier\n",NVNGXProxy::useRr ? "DLSS RR" : DlssNr::PrivateUpscalerName(selected));
     return 0;
 } catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }

@@ -244,7 +244,7 @@ struct DlssNr_Dx12::State
             bool occupied[MarkerCount] {};
             unsigned nextMarker = 0, lastMarker = 0;
             bool everRecorded = false, smallReadable = false, reset = true, failed = false;
-            bool rayReconstruction = false, finishedPicture = false;
+            bool rayReconstruction = false, finishedPicture = false, privateRr = false;
             DlssNr::PrivateUpscaler backend = DlssNr::PrivateUpscaler::DLSS;
             std::unique_ptr<DlssNr::PrivateUpscalerDx12> upscaler;
             DlssNr::PrivateUpscalerFrameDx12 frame;
