@@ -77,6 +77,9 @@ auto DlssNr_Dx12::State::FinishedPictureSubmitted(ID3D12CommandQueue* queue, UIN
                     // Signal after ExecuteCommandLists, never when merely recording the copy.
                     slot.submitted = true;
                     late.producerQueue = queue;
+                    ID3D12CommandQueue* realQueue = nullptr;
+                    slot.producerQueue = Util::CheckForRealObject(__FUNCTION__, queue, (IUnknown**) &realQueue)
+                                             ? realQueue : queue;
                     if (FAILED(queue->Signal(slot.fence.Get(), slot.ready)))
                     {
                         // The copy already executed. Keep its unsignalled fence protecting

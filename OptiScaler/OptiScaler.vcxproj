@@ -935,5 +935,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="dlssnr\DlssNr_Placement.h" />
+    <ClInclude Include="dlssnr\DlssNr_FinishedReady.h" />
   </ItemGroup>
 </Project>

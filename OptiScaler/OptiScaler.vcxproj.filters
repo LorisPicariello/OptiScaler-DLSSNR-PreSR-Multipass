@@ -1644,5 +1644,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="dlssnr\DlssNr_Placement.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="dlssnr\DlssNr_FinishedReady.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
 </Project>

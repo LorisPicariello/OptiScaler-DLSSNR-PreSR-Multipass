@@ -12,6 +12,9 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     LateContext::ComPtr<ID3D12Device> currentDevice;
     if (FAILED(queue->GetDevice(IID_PPV_ARGS(&currentDevice))) || currentDevice != late.device)
         return false;
+    ID3D12CommandQueue* realQueue = nullptr;
+    if (!Util::CheckForRealObject(__FUNCTION__, queue, (IUnknown**) &realQueue))
+        realQueue = queue;
     const auto desc = color->GetDesc();
     const bool pq = colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
     const bool scrgb = colorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
@@ -39,6 +42,16 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
             late.reset = true;
             continue;
         }
+        if (!DlssNr::FinishedInputReady(slot.producerQueue.Get() == realQueue,
+                                        slot.fence->GetCompletedValue(), slot.ready))
+        {
+            if (!late.reportedQueueDelay)
+            {
+                LOG_INFO("DLSS-NR finished picture: skipping unfinished cross-queue input to avoid a present/render fence cycle");
+                late.reportedQueueDelay = true;
+            }
+            continue;
+        }
         if (slot.residualOnly == residualOnly && slot.frame.OutputWidth == desc.Width &&
             slot.frame.OutputHeight == desc.Height && (!latest || slot.serial > latest->serial))
             latest = &slot;
@@ -51,15 +64,7 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
         late.heldSlot->frame.OutputWidth == desc.Width && late.heldSlot->frame.OutputHeight == desc.Height)
     {
         auto& held = *late.heldSlot;
-        bool ready = late.Finished(held);
-        if (!ready)
-        {
-            HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-            ready = event && SUCCEEDED(held.fence->SetEventOnCompletion(held.done, event)) &&
-                    WaitForSingleObject(event, 5000) == WAIT_OBJECT_0;
-            if (event) CloseHandle(event);
-        }
-        if (ready)
+        if (late.Finished(held))
             latest = &held;
     }
     if (!latest)
@@ -75,20 +80,9 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
             return false;
         if (late.heldFinished && !SameHoldShape(late.heldFinished->GetDesc(), desc))
         {
-            // Resize/format change is rare. Drain the last use before replacing the single snapshot.
-            if (late.heldFence && late.heldFence->GetCompletedValue() < late.heldReady)
-            {
-                HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-                const bool ready = event && SUCCEEDED(late.heldFence->SetEventOnCompletion(late.heldReady, event)) &&
-                                   WaitForSingleObject(event, 5000) == WAIT_OBJECT_0;
-                if (event) CloseHandle(event);
-                if (!ready)
-                {
-                    late.Say("Hold resize failed. Restart the game.");
-                    late.heldFailed = true;
-                    return false;
-                }
-            }
+            // Defer replacement rather than blocking a presentation needed by the old work.
+            if (late.heldFence && !DlssNr::FinishedInputReady(false, late.heldFence->GetCompletedValue(), late.heldReady))
+                return false;
             late.heldFinished.Reset();
             late.heldValid = false;
         }
@@ -97,7 +91,10 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
             late.heldFinished.Attach(CreateScratch(late.device.Get(), desc.Format, (unsigned) desc.Width, desc.Height));
             late.heldState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         }
-        if (!late.heldFinished || (late.heldFence && FAILED(queue->Wait(late.heldFence.Get(), late.heldReady))))
+        if (late.heldFence && !DlssNr::FinishedInputReady(late.heldQueue.Get() == realQueue,
+                                                        late.heldFence->GetCompletedValue(), late.heldReady))
+            return false;
+        if (!late.heldFinished)
         {
             late.Say("Could not hold the finished frame.");
             return false;
@@ -107,7 +104,8 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     for (auto& other : late.slots)
         if (other.submitted && other.serial <= slot.serial)
             other.pending = false;
-    if (FAILED(queue->Wait(slot.fence.Get(), slot.ready)) || FAILED(slot.allocator->Reset()) ||
+    // Input is complete or ordered earlier on this queue. Never insert a wait on future render work here.
+    if (FAILED(slot.allocator->Reset()) ||
         FAILED(slot.commands->Reset(slot.allocator.Get(), nullptr)))
     {
         late.reset = true;
@@ -332,6 +330,7 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     if (holdFinished)
     {
         late.heldFence = slot.fence;
+        late.heldQueue = realQueue;
         late.heldReady = slot.done;
         late.heldSlot = &slot;
         late.heldSlotSerial = slot.serial;
@@ -346,8 +345,8 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
                                                                              : "Applying NR to the finished picture.")
                                                                       : "Preparing NR for the finished picture.");
     if (ran && (++late.successes == 1 || late.successes % 300 == 0))
-        LOG_INFO("DLSS-NR finished picture: {} frames, {}x{}, FG {}", late.successes, desc.Width, desc.Height,
+        LOG_INFO("DLSS-NR finished picture: {} frames, {}x{}, OptiScaler FG {}, same producer queue {}", late.successes, desc.Width, desc.Height,
                  ::State::Instance().currentFG && ::State::Instance().currentFG->IsActive() &&
-                     !::State::Instance().currentFG->IsPaused());
+                     !::State::Instance().currentFG->IsPaused(), slot.producerQueue.Get() == realQueue);
     return ran;
 }

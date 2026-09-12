@@ -1,6 +1,7 @@
 #pragma once
 #include "DlssNr_Dx12_ModelState.h"
 #include <dlssnr/DlssNr_Placement.h>
+#include <dlssnr/DlssNr_FinishedReady.h>
 #include <dlssnr/PassProfiles.h>
 
 #include <set>
@@ -345,6 +346,7 @@ struct DlssNr_Dx12::State
             DXGI_COLOR_SPACE_TYPE responseSpace = DXGI_COLOR_SPACE_CUSTOM;
             bool cleanSceneValid = false, responseValid = false;
             ComPtr<ID3D12Fence> fence;
+            ComPtr<ID3D12CommandQueue> producerQueue;
             ComPtr<ID3D12CommandAllocator> allocator;
             ComPtr<ID3D12GraphicsCommandList> commands;
             ID3D12CommandList* producer = nullptr; // identity only; never dereferenced
@@ -359,10 +361,12 @@ struct DlssNr_Dx12::State
         // One clean presentation snapshot for the owner, never one per rotating backbuffer/slot.
         ComPtr<ID3D12Resource> heldFinished;
         ComPtr<ID3D12Fence> heldFence;
+        ComPtr<ID3D12CommandQueue> heldQueue;
         uint64_t heldReady = 0, heldGeneration = 0;
         D3D12_RESOURCE_STATES heldState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         DXGI_COLOR_SPACE_TYPE heldSpace = DXGI_COLOR_SPACE_CUSTOM;
         bool heldValid = false, heldFailed = false;
+        bool reportedQueueDelay = false;
         Slot* heldSlot = nullptr;
         uint64_t heldSlotSerial = 0;
         uint64_t serial = 0, successes = 0;
