@@ -51,3 +51,15 @@ The finished-picture stage now accepts native DX12, DX11 through its DX12 bridge
 Vulkan uses native NR at presentation even for a Vulkan/DX12 upscaler. Early generation with
 application to the finished picture remains a DX12/DX11-bridge mode; Vulkan reports that
 limitation instead of silently using a different placement. See `NR-FINISHED-BRIDGES.md`.
+
+## NR colour and timing bar
+
+The model stage is green in every route, with theme-adjusted hover and selection brightness.
+The runtime area shows a horizontal stack of measured NR GPU time and estimated remaining
+rendered-frame time. The DXGI real-frame interval is used even when FG inserts frames; native
+Vulkan uses the existing overlay interval. This is an estimate, not a GPU workload breakdown
+or an FG-feature timer: overlapping work and delayed timing samples can make NR exceed the
+frame interval. That case shows a full green bar and an explicit overlap note.
+
+The existing offscreen ImGui/WARP harness rendered all routes and exercised chart selection.
+Normal and overlapping timing examples were visually checked. No game settings were changed.

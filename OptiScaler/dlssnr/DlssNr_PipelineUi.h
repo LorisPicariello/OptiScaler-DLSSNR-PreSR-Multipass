@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <cmath>
 
 namespace DlssNr::PipelineUi
 {
@@ -73,6 +74,39 @@ inline bool CheckboxWrapped(const char* label, bool* value, float width)
     ImGui::EndGroup();
     ImGui::PopID();
     return changed;
+}
+
+inline void DrawTimingBar(double nrMs, double frameMs)
+{
+    if (!std::isfinite(nrMs) || nrMs < 0.0 || !std::isfinite(frameMs) || frameMs <= 0.0)
+    {
+        ImGui::TextDisabled("Waiting for frame timing.");
+        return;
+    }
+    const double remaining = std::max(frameMs - nrMs, 0.0);
+    const bool overlapping = nrMs > frameMs;
+    ImGui::TextWrapped("NR %.2f ms  |  Rest of frame ~%.2f ms", nrMs, remaining);
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const ImVec2 size(std::max(ImGui::GetContentRegionAvail().x, 1.0f), ImGui::GetFontSize());
+    const float split = size.x * static_cast<float>(nrMs / std::max(frameMs, nrMs));
+    const auto text = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(at, ImVec2(at.x + size.x, at.y + size.y), ImGui::GetColorU32(ImGuiCol_FrameBg));
+    if (split > 0.0f)
+        draw->AddRectFilled(at, ImVec2(at.x + split, at.y + size.y),
+                            ImGui::GetColorU32(ImVec4(text.x * 0.20f, text.y * 0.55f, text.z * 0.25f, text.w)));
+    if (split < size.x)
+        draw->AddRectFilled(ImVec2(at.x + split, at.y), ImVec2(at.x + size.x, at.y + size.y),
+                            ImGui::GetColorU32(ImGuiCol_Button));
+    ImGui::Dummy(size);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Green: measured NR GPU interval. Blue: estimated remaining rendered-frame time.\n"
+                          "Frame interval includes waits and overlapping work; NR samples can lag behind it.\n"
+                          "This is not a measurement of the DLSS/FSR frame-generation feature or added NR latency.");
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("Rendered frame: %.2f ms%s", frameMs,
+                        overlapping ? " (NR overlaps/exceeds this interval)" : "");
+    ImGui::PopTextWrapPos();
 }
 
 // This describes the configured colour/edit flow. It never changes a rendering option.
@@ -230,7 +264,14 @@ inline void Draw(const View& view, Section& selected)
                                 : hovered  ? ImGuiCol_ButtonHovered
                                 : editable ? ImGuiCol_Button
                                            : ImGuiCol_FrameBg;
-        draw->AddRectFilled(at, ImVec2(at.x + nodeWidth, at.y + height), ImGui::GetColorU32(background),
+        auto fill = ImGui::GetStyleColorVec4(background);
+        if (node.section == (int) Section::Model)
+        {
+            // Preserve the theme's HDR brightness and interaction states, changing only the hue.
+            const float brightness = std::max({ fill.x, fill.y, fill.z });
+            fill = ImVec4(brightness * 0.20f, brightness * 0.65f, brightness * 0.30f, fill.w);
+        }
+        draw->AddRectFilled(at, ImVec2(at.x + nodeWidth, at.y + height), ImGui::GetColorU32(fill),
                             ImGui::GetStyle().FrameRounding);
         const auto titleSize = ImGui::CalcTextSize(node.title, nullptr, false, wrapWidth);
         const auto detailSize = ImGui::CalcTextSize(node.detail.c_str(), nullptr, false, wrapWidth);

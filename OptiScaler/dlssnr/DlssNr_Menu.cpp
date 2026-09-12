@@ -257,6 +257,17 @@ static void RenderStatus(Config* config, float menuResScale)
                               "runs.\nCompare FPS to check the effect on game performance.");
         if (finishedPicture)
             ImGui::TextDisabled("Includes time shared with other GPU work.");
+        if (ms.has_value())
+        {
+            const auto& state = State::Instance();
+            // The FG swapchain interval is between real game frames, not interpolated presents.
+            // Native Vulkan has no DXGI timing, so use the existing overlay frame interval there.
+            const double frameMs = state.swapchainApi == API::Vulkan
+                                       ? (state.frameTimes.empty() ? 0.0 : state.frameTimes.back())
+                                   : state.currentFG ? state.lastFGFrameTime
+                                                     : state.presentFrameTime;
+            PipelineUi::DrawTimingBar(ms.value(), frameMs);
+        }
     }
 }
 
