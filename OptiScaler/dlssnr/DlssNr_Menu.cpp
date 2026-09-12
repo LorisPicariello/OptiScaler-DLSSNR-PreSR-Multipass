@@ -123,16 +123,7 @@ static bool InheritedProfileCombo(const char* label, CustomOptional<uint32_t, No
 static void RenderPlacement(Config* config, float menuResScale)
 {
     const bool enabled = config->DlssNrEnabled.value_or_default();
-    bool finishedPicture = config->DlssNrFinishedPicture.value_or_default();
-    if (ImGui::Checkbox("Apply NR to the finished picture", &finishedPicture))
-    {
-        config->DlssNrFinishedPicture = finishedPicture;
-        DlssNr::RetryAfterFailure();
-    }
-    HelpMarker(
-        "Apply NR after the game has finished its lighting and effects. This may help with green noise.\nWorks with "
-        "DirectX 12, the DirectX 11 bridge, or Vulkan, including SDR, HDR10 and scRGB.\nIt can also change "
-        "the HUD and menus. Enable Generate model before upscale to generate the changes earlier.");
+    const bool finishedPicture = config->DlssNrFinishedPicture.value_or_default();
     if (finishedPicture && enabled)
     {
         const auto feature = State::Instance().currentFeature;
@@ -174,11 +165,6 @@ static void RenderPlacement(Config* config, float menuResScale)
     bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
     if (!finishedPicture)
     {
-        if (ImGui::Checkbox("Generate before SR, apply after SR (DLSS)", &deferredDlss))
-            config->DlssNrDeferredDlss = deferredDlss;
-        HelpMarker("Compute NR at input resolution, upscale its changes with DLSS, then apply them after "
-                   "SR.\nExperimental: may flicker and adds GPU cost. Requires DLSS on DX12 or its bridges; does not "
-                   "support RR.\nForces Generate model before upscale on. Disable Hold frame, Compare and Debug view.");
         if (deferredDlss && rayReconstruction)
             ImGui::TextWrapped("Generate before / apply after is unavailable with RR. Generate model before upscale "
                                "controls NR placement.");
@@ -879,13 +865,21 @@ static void RenderModel(Config* config, float menuResScale)
 
 static void RenderBlend(Config* config, float menuResScale)
 {
-    bool applyModel = config->DlssNrApplyModel.value_or_default();
-    if (ImGui::Checkbox("Apply the model", &applyModel))
-        config->DlssNrApplyModel = applyModel;
-
-    HelpMarker("Show or hide the NR effect. The model still runs when hidden.\nDisable Enable Neural Rendering to stop "
-               "its GPU cost.");
-
+    if (config->DlssNrFinishedPicture.value_or_default() &&
+        (config->DlssNrRunBeforeSr.value_or_default() || config->DlssNrDeferredDlss.value_or_default()))
+    {
+        const auto feature = State::Instance().currentFeature;
+        ImGui::BeginDisabled(State::Instance().swapchainApi == API::Vulkan ||
+                             (feature && feature->GetUpscalerType() == Upscaler::DLSSD));
+        bool hdrTransfer = config->DlssNrHdrTransfer.value_or_default();
+        if (ImGui::Checkbox("Match HDR brightness response (experimental)", &hdrTransfer))
+            config->DlssNrHdrTransfer = hdrTransfer;
+        ImGui::EndDisabled();
+        HelpMarker("Measure how the game changes brightness between SR and the finished HDR picture, then adjust "
+                   "the early NR edit accordingly.\nActive for HDR10/scRGB with scene-linear input and DLSS SR. "
+                   "Unreliable regions use the existing transfer. Colour grading, bloom and HUD remain approximate.\n"
+                   "Adds a clean-frame copy and a GPU analysis pass; no extra model pass. Off by default.");
+    }
     float transfer = config->DlssNrTransferStrength.value_or_default();
     if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 2.0f, "%.2f"))
         config->DlssNrTransferStrength = transfer;
@@ -1033,9 +1027,16 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::SetTooltip(
                 "Requires nvngx_dlssnr.dll and a compatible NVIDIA driver. Disabling NR stops its GPU work.");
 
+        bool applyModel = config->DlssNrApplyModel.value_or_default();
+        if (PipelineUi::CheckboxWrapped("Apply model", &applyModel, toggleWidth))
+            config->DlssNrApplyModel = applyModel;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Show or hide the NR effect. The model still runs when hidden.\nDisable Enable Neural "
+                              "Rendering to stop its GPU cost.");
+
         const auto feature = State::Instance().currentFeature;
         const bool rayReconstruction = feature && feature->GetUpscalerType() == Upscaler::DLSSD;
-        const bool finished = config->DlssNrFinishedPicture.value_or_default();
+        bool finished = config->DlssNrFinishedPicture.value_or_default();
         const bool deferredActive = !finished && config->DlssNrDeferredDlss.value_or_default() && !rayReconstruction;
         bool generateBefore = config->DlssNrRunBeforeSr.value_or_default() ||
                               (finished && config->DlssNrDeferredDlss.value_or_default()) || deferredActive;
@@ -1056,6 +1057,31 @@ void RenderMenu(Config* config, float menuResScale)
                                  "may look different. Requires DLSS SR; does not support RR."
                                : "On: generate and apply NR before SR or combined RR+SR. Off: run it afterward.\n"
                                  "Before RR is experimental. Unsupported input layouts fall back after upscaling.");
+
+        if (PipelineUi::CheckboxWrapped("Apply NR to the finished picture", &finished, toggleWidth))
+        {
+            config->DlssNrFinishedPicture = finished;
+            DlssNr::RetryAfterFailure();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Apply NR after the game has finished its lighting and effects. This may help with green noise.\n"
+                "Works with DirectX 12, the DirectX 11 bridge, or Vulkan, including SDR, HDR10 and scRGB.\n"
+                "It can also change the HUD and menus. Enable Generate model before upscale to generate the changes earlier.");
+
+        ImGui::SameLine(toggleRight);
+        bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
+        ImGui::BeginDisabled(finished);
+        if (PipelineUi::CheckboxWrapped("Generate before SR, apply after SR (DLSS)", &deferredDlss, toggleWidth))
+            config->DlssNrDeferredDlss = deferredDlss;
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(
+                finished ? "For the finished picture, use Generate model before upscale to generate the changes earlier."
+                         : "Compute NR at input resolution, upscale its changes with DLSS, then apply them after SR.\n"
+                           "Experimental: may flicker and adds GPU cost. Requires DLSS on DX12 or its bridges; does not "
+                           "support RR.\nForces Generate model before upscale on. Disable Hold frame, Compare and Debug view.");
+        ImGui::Spacing();
 
         PipelineUi::View view;
         view.enabled = enabled;

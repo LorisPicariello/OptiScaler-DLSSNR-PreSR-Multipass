@@ -7,18 +7,18 @@ fail. The diagram is not a claim that every configured stage is currently execut
 
 Linear routes stay in one vertical column. Only routes carrying a separate NR edit split
 left/right and rejoin at application. Inspection is a separate tool button below the chart.
-Enable Neural Rendering and Generate model before upscale sit together above it; their
-labels wrap in narrow overlays. The generation toggle keeps the existing before-SR setting
+Enable Neural Rendering, Apply model, Generate model before upscale, Apply NR to the finished
+picture, and Generate before SR/apply after SR sit above it; labels wrap in narrow overlays. The generation toggle keeps the existing before-SR setting
 and is checked and disabled while deferred generation forces that placement.
 
 | Section | Existing controls | Role |
 | --- | --- | --- |
-| Top controls / status | Enable Neural Rendering; Generate model before upscale; runtime status and retry | Starts/stops NR work and chooses generation placement. Timing retains its existing meaning. |
-| Game input / placement | Finished-picture mode; generate before/apply after; carry edit across RR; accumulation rate; shortcut guidance | Chooses where colour or the separately generated edit joins the game pipeline. |
+| Top controls / status | Enable Neural Rendering; Apply model; Generate model before upscale; finished-picture mode; generate before/apply after; runtime status and retry | Starts/stops NR work and chooses generation placement. Timing retains its existing meaning. |
+| Game input / placement | Carry edit across RR; accumulation rate; shortcut guidance | Chooses where colour or the separately generated edit joins the game pipeline. |
 | Prepare NR input | Model resolution; downscaler; enlargement; HDR mapping; white-point source; paper white; exposure trim | Prepares the model's working image and controls how its result is resized. Reversible HDR mapping also determines the reconstruction/composition method. |
 | Exposure calibration within input preparation | Scan meter; anchors and their white points; scan trim; inversion; advanced candidate readouts | Calibrates the scanned exposure source. These are attached to input preparation, rather than a separate rendering pass. |
 | NR model | Pass count; pass 1 and pass 2 style, intensity, local structure, local tone, skin structure and automatic skin mask; resets/inheritance | Generates the edit. The chart shows the configured pass count; a second pass has its own settings/history and additional cost. |
-| Apply NR edit | Apply model; detail/colour strengths; highlight guard; separate skin/environment detail and colour; skin-colour permission; mask preview | Controls how the result changes the image. Hiding the edit still runs the model. |
+| Apply NR edit | Detail/colour strengths; highlight guard; separate skin/environment detail and colour; skin-colour permission; mask preview | Controls how the result changes the image. Hiding the edit still runs the model. |
 | Inspect NR | Hold frame; comparison mode; swap/labels/label size; side-by-side zoom; wipe split; debug view | Observes the NR boundary through a separate tool button. Later game rendering can still change the displayed image. |
 
 ## Routes
