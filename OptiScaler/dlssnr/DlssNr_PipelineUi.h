@@ -3,6 +3,8 @@
 #include <imgui/imgui.h>
 #include <algorithm>
 #include <string>
+#include <vector>
+#include <utility>
 
 namespace DlssNr::PipelineUi
 {
@@ -52,169 +54,218 @@ inline const char* SectionName(Section section)
     return "";
 }
 
+// Keep both top-level toggles on one row, wrapping their clickable labels in narrow overlays.
+inline bool CheckboxWrapped(const char* label, bool* value, float width)
+{
+    ImGui::PushID(label);
+    ImGui::BeginGroup();
+    const float right = ImGui::GetCursorPosX() + width;
+    bool changed = ImGui::Checkbox("##toggle", value);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::PushTextWrapPos(right);
+    ImGui::TextUnformatted(label);
+    ImGui::PopTextWrapPos();
+    if (ImGui::IsItemClicked())
+    {
+        *value = !*value;
+        changed = true;
+    }
+    ImGui::EndGroup();
+    ImGui::PopID();
+    return changed;
+}
+
 // This describes the configured colour/edit flow. It never changes a rendering option.
 inline void Draw(const View& view, Section& selected)
 {
     ImGui::PushID("NR pipeline chart");
     ImGui::TextUnformatted("Configured render pipeline");
-    ImGui::TextWrapped("Select a box to edit its settings. Game stages are shown for context.");
+    ImGui::TextWrapped(view.enabled ? "Select a stage to edit its settings."
+                                    : "NR is off. Its settings remain available below.");
     const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const float width = std::max(ImGui::GetContentRegionAvail().x - ImGui::GetFontSize(), 260.0f);
-    const float gap = ImGui::GetFontSize() * 2.5f;
-    const float nodeWidth = (width - gap) * 0.5f;
-    const float height = ImGui::GetTextLineHeight() * 2.0f + ImGui::GetStyle().FramePadding.y * 2.0f + 8.0f;
-    const float step = height + ImGui::GetFontSize() * 1.15f;
+    const float width = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+    const float gap = ImGui::GetFontSize() * 1.5f;
+    const bool split = view.enabled && (view.route == Route::Deferred || view.route == Route::AcrossRr ||
+                                        view.route == Route::FinishedBefore);
+    const bool finished = view.route == Route::Finished || view.route == Route::FinishedBefore;
+    const float nodeWidth =
+        split ? std::max((width - gap) * 0.5f, 1.0f) : std::min(width, ImGui::GetFontSize() * 27.0f);
     struct Node
     {
-        int column, row;
+        int lane, row; // -1: left branch, 0: main path, 1: right branch
         const char* title;
         std::string detail;
         int section;
-        bool nr;
     };
-    const bool split =
-        view.route == Route::Deferred || view.route == Route::AcrossRr || view.route == Route::FinishedBefore;
-    const bool before = view.route == Route::Before || split;
-    const bool finished = view.route == Route::Finished || view.route == Route::FinishedBefore;
-    const int prepareRow = view.route == Route::Finished ? 3 : before ? 1 : 2;
-    Node nodes[] {
-        { 0, 0, "Game input", "Placement / routing", (int) Section::Placement, false },
-        { 1, prepareRow, "Prepare NR input", "HDR / exposure / " + std::to_string(view.scalePercent) + "%",
-          (int) Section::Input, true },
-        { 1, prepareRow + 1, "NR model",
-          std::to_string(view.passes) + (view.passes == 1 ? " pass / tuning" : " passes / tuning"),
-          (int) Section::Model, true },
-        { 1,
-          finished ? 5
-          : split  ? 4
-                   : prepareRow + 2,
-          "Apply NR edit", view.applyModel ? "Strength / skin" : "Edit hidden; model runs",
-          (int) Section::Blend, true },
-        { 0, before ? 4 : 1, view.rayReconstruction ? "RR + Super Resolution" : "Super Resolution", "Game upscaler",
-          -1, false },
-        { 0, view.route == Route::Finished ? 2 : 5, "Game effects + HUD", "Game rendering", -1, false },
-        { 0, 6, "Game output", "FG / presentation", -1, false },
-        { 1, 6, "Inspect NR", "Hold / compare / debug", (int) Section::Inspect, true },
-        { 1, 3, view.route == Route::AcrossRr ? "Accumulate NR edit" : "Upscale NR edit",
-          view.route == Route::AcrossRr ? "Motion-guided residual" : "Separate DLSS pass", -1, true }
-    };
-    const auto topLeft = [&](int i)
-    { return ImVec2(origin.x + nodes[i].column * (nodeWidth + gap), origin.y + nodes[i].row * step); };
-    auto* draw = ImGui::GetWindowDrawList();
-    const ImU32 lineColour = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    const auto connect = [&](int from, int to, bool tap = false)
+    struct Edge
     {
-        const auto a = topLeft(from), b = topLeft(to);
-        ImVec2 start(a.x + nodeWidth * 0.5f, a.y + height);
-        ImVec2 end(b.x + nodeWidth * 0.5f, b.y);
-        if (nodes[from].row == nodes[to].row)
-        {
-            start = ImVec2(a.x + nodeWidth, a.y + height * 0.5f);
-            end = ImVec2(b.x, b.y + height * 0.5f);
-            draw->AddLine(start, end, lineColour, 1.5f);
-            draw->AddTriangleFilled(end, ImVec2(end.x - 5, end.y - 3), ImVec2(end.x - 5, end.y + 3), lineColour);
-            return;
-        }
-        const float mid = (start.y + end.y) * 0.5f;
-        // Inspection is a side tap, not another rendering pass.
-        if (tap)
-        {
-            const float x = a.x + nodeWidth + gap * 0.25f;
-            start = ImVec2(a.x + nodeWidth, a.y + height * 0.5f);
-            end = ImVec2(b.x + nodeWidth, b.y + height * 0.5f);
-            draw->AddLine(start, ImVec2(x, start.y), lineColour);
-            for (float y = start.y; y < end.y; y += 8.0f)
-                draw->AddLine(ImVec2(x, y), ImVec2(x, std::min(y + 4.0f, end.y)), lineColour);
-            draw->AddLine(ImVec2(x, end.y), end, lineColour);
-        }
-        else
-        {
-            draw->AddLine(start, ImVec2(start.x, mid), lineColour, 1.5f);
-            draw->AddLine(ImVec2(start.x, mid), ImVec2(end.x, mid), lineColour, 1.5f);
-            draw->AddLine(ImVec2(end.x, mid), end, lineColour, 1.5f);
-            draw->AddTriangleFilled(end, ImVec2(end.x - 3, end.y - 5), ImVec2(end.x + 3, end.y - 5), lineColour);
-        }
+        int from, to;
     };
-    if (!view.enabled)
+    std::vector<Node> nodes;
+    std::vector<Edge> edges;
+    const auto add = [&](int lane, int row, const char* title, std::string detail, int section = -1)
     {
-        connect(0, 4);
-        connect(4, 5);
-        connect(5, 6);
+        nodes.push_back({ lane, row, title, std::move(detail), section });
+        return (int) nodes.size() - 1;
+    };
+    const auto connect = [&](int from, int to) { edges.push_back({ from, to }); };
+    const auto prepare = [&](int lane, int row)
+    {
+        return add(lane, row, "Prepare NR input", "HDR / exposure / " + std::to_string(view.scalePercent) + "%",
+                   (int) Section::Input);
+    };
+    const auto model = [&](int lane, int row)
+    {
+        return add(lane, row, "NR model",
+                   std::to_string(view.passes) + (view.passes == 1 ? " pass / tuning" : " passes / tuning"),
+                   (int) Section::Model);
+    };
+    const auto apply = [&](int row)
+    {
+        return add(0, row, "Apply NR edit", view.applyModel ? "Strength / skin" : "Edit hidden; model runs",
+                   (int) Section::Blend);
+    };
+    const auto upscale = [&](int lane, int row)
+    {
+        return add(lane, row, view.rayReconstruction ? "RR + Super Resolution" : "Super Resolution",
+                   split ? "Clean game image" : "Game upscaler");
+    };
+    const auto effects = [&](int lane, int row) { return add(lane, row, "Game effects + HUD", "Game rendering"); };
+    const int input = add(0, 0, "Game input", "Placement / routing", (int) Section::Placement);
+    int last = input, lastRow = 0;
+    if (split)
+    {
+        // Only a separately carried edit branches. Both paths reunite at its application point.
+        const int prep = prepare(-1, 1), nr = model(-1, 2);
+        const int edit = add(-1, 3, view.route == Route::AcrossRr ? "Accumulate NR edit" : "Upscale NR edit",
+                             view.route == Route::AcrossRr ? "Motion-guided residual" : "Separate DLSS pass");
+        int game = upscale(1, 1);
+        connect(input, prep);
+        connect(prep, nr);
+        connect(nr, edit);
+        connect(input, game);
+        if (finished)
+        {
+            const int fx = effects(1, 2);
+            connect(game, fx);
+            game = fx;
+        }
+        last = apply(4);
+        connect(edit, last);
+        connect(game, last);
+        lastRow = 4;
     }
     else
     {
-        if (split)
+        const auto append = [&](int next)
         {
-            connect(0, 4);
-            connect(0, 1);
-            connect(1, 2);
-            connect(2, 8);
-            connect(8, 3);
-            if (finished)
-            {
-                connect(4, 5);
-                connect(5, 3);
-                connect(3, 6);
-            }
-            else
-            {
-                connect(4, 3);
-                connect(3, 5);
-                connect(5, 6);
-            }
-        }
-        else if (before)
+            connect(last, next);
+            last = next;
+        };
+        if (!view.enabled || view.route != Route::Before)
+            append(upscale(0, ++lastRow));
+        if (!view.enabled || finished)
+            append(effects(0, ++lastRow));
+        if (view.enabled)
         {
-            connect(0, 1);
-            connect(1, 2);
-            connect(2, 3);
-            connect(3, 4);
-            connect(4, 5);
-            connect(5, 6);
+            append(prepare(0, ++lastRow));
+            append(model(0, ++lastRow));
+            append(apply(++lastRow));
+            if (view.route == Route::Before)
+                append(upscale(0, ++lastRow));
         }
-        else if (finished)
-        {
-            connect(0, 4);
-            connect(4, 5);
-            connect(5, 1);
-            connect(1, 2);
-            connect(2, 3);
-            connect(3, 6);
-        }
-        else
-        {
-            connect(0, 4);
-            connect(4, 1);
-            connect(1, 2);
-            connect(2, 3);
-            connect(3, 5);
-            connect(5, 6);
-        }
-        connect(3, 7, true);
     }
-    for (int i = 0; i < (split ? 9 : 8); ++i)
+    if (view.enabled && !finished)
+    {
+        const int fx = effects(0, ++lastRow);
+        connect(last, fx);
+        last = fx;
+    }
+    connect(last, add(0, ++lastRow, "Game output", "FG / presentation"));
+
+    // Wrap labels inside their nodes so a narrow overlay does not crop either branch.
+    const float padding = ImGui::GetStyle().FramePadding.x + 4.0f;
+    const float wrapWidth = std::max(nodeWidth - padding * 2.0f, 1.0f);
+    float height = 0.0f;
+    for (const auto& node : nodes)
+        height = std::max(height, ImGui::CalcTextSize(node.title, nullptr, false, wrapWidth).y +
+                                      ImGui::CalcTextSize(node.detail.c_str(), nullptr, false, wrapWidth).y + 12.0f);
+    const float step = height + gap;
+    const auto topLeft = [&](int index)
+    {
+        const auto& node = nodes[index];
+        const float x = node.lane < 0 ? 0.0f : node.lane > 0 ? width - nodeWidth : (width - nodeWidth) * 0.5f;
+        return ImVec2(origin.x + x, origin.y + node.row * step);
+    };
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImU32 lineColour = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    for (const auto& edge : edges)
+    {
+        const auto a = topLeft(edge.from), b = topLeft(edge.to);
+        const ImVec2 start(a.x + nodeWidth * 0.5f, a.y + height), end(b.x + nodeWidth * 0.5f, b.y);
+        const float bend = end.y - gap * 0.5f;
+        draw->AddLine(start, ImVec2(start.x, bend), lineColour, 1.5f);
+        draw->AddLine(ImVec2(start.x, bend), ImVec2(end.x, bend), lineColour, 1.5f);
+        draw->AddLine(ImVec2(end.x, bend), end, lineColour, 1.5f);
+        draw->AddTriangleFilled(end, ImVec2(end.x - 3, end.y - 5), ImVec2(end.x + 3, end.y - 5), lineColour);
+    }
+    for (int i = 0; i < (int) nodes.size(); ++i)
     {
         const auto& node = nodes[i];
-        ImGui::SetCursorScreenPos(topLeft(i));
+        const auto at = topLeft(i);
+        ImGui::SetCursorScreenPos(at);
         ImGui::PushID(i);
-        const bool chosen = node.section >= 0 && node.section == (int) selected;
-        if (chosen)
-            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive));
-        if (node.nr && !view.enabled)
-            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.55f);
-        ImGui::BeginDisabled(node.section < 0);
-        if (ImGui::Button((std::string(node.title) + "\n" + node.detail).c_str(), ImVec2(nodeWidth, height)))
-            selected = (Section) node.section;
-        ImGui::EndDisabled();
-        if (node.nr && !view.enabled)
-            ImGui::PopStyleVar();
-        if (chosen)
-            ImGui::PopStyleColor();
+        const bool editable = node.section >= 0;
+        const bool chosen = editable && node.section == (int) selected;
+        bool hovered = false;
+        if (editable)
+        {
+            if (ImGui::InvisibleButton("stage", ImVec2(nodeWidth, height)))
+                selected = (Section) node.section;
+            hovered = ImGui::IsItemHovered();
+        }
+        else
+            ImGui::Dummy(ImVec2(nodeWidth, height));
+        const auto background = chosen     ? ImGuiCol_HeaderActive
+                                : hovered  ? ImGuiCol_ButtonHovered
+                                : editable ? ImGuiCol_Button
+                                           : ImGuiCol_FrameBg;
+        draw->AddRectFilled(at, ImVec2(at.x + nodeWidth, at.y + height), ImGui::GetColorU32(background),
+                            ImGui::GetStyle().FrameRounding);
+        const auto titleSize = ImGui::CalcTextSize(node.title, nullptr, false, wrapWidth);
+        const auto detailSize = ImGui::CalcTextSize(node.detail.c_str(), nullptr, false, wrapWidth);
+        const float y = at.y + (height - titleSize.y - detailSize.y) * 0.5f;
+        draw->AddText(nullptr, 0.0f, ImVec2(at.x + (nodeWidth - titleSize.x) * 0.5f, y),
+                      ImGui::GetColorU32(ImGuiCol_Text), node.title, nullptr, wrapWidth);
+        draw->AddText(nullptr, 0.0f, ImVec2(at.x + (nodeWidth - detailSize.x) * 0.5f, y + titleSize.y),
+                      ImGui::GetColorU32(editable ? ImGuiCol_Text : ImGuiCol_TextDisabled), node.detail.c_str(),
+                      nullptr, wrapWidth);
         ImGui::PopID();
     }
-    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + 7 * step));
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + (lastRow + 1) * step));
     ImGui::Dummy(ImVec2(width, 0));
-    ImGui::TextDisabled("Inspection taps the NR boundary. Later game effects may change the image.");
+    // Inspection is a tool, not a colour path or a processing stage.
+    const auto tool = [&](const char* label, Section section)
+    {
+        const bool chosen = selected == section;
+        if (chosen)
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive));
+        if (ImGui::Button(label))
+            selected = section;
+        if (chosen)
+            ImGui::PopStyleColor();
+    };
+    if (!view.enabled)
+    {
+        tool("Prepare input", Section::Input);
+        ImGui::SameLine();
+        tool("Model passes", Section::Model);
+        ImGui::SameLine();
+        tool("Apply edit", Section::Blend);
+    }
+    tool("Inspect NR: hold / compare / debug", Section::Inspect);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Inspect the NR boundary. Later game effects may change the image.");
     ImGui::PopID();
 }
 } // namespace DlssNr::PipelineUi

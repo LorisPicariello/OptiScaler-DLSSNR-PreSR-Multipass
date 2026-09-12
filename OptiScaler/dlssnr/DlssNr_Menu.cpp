@@ -131,7 +131,7 @@ static void RenderPlacement(Config* config, float menuResScale)
     HelpMarker(
         "Apply NR after the game has finished its lighting and effects. This may help with green noise.\nWorks with "
         "frame generation on or off in native DirectX 12 games, including SDR, HDR10 and scRGB.\nIt can also change "
-        "the HUD and menus. Enable Run the model before Super Resolution to generate the changes earlier.");
+        "the HUD and menus. Enable Generate model before upscale to generate the changes earlier.");
     if (finishedPicture && enabled)
     {
         const auto feature = State::Instance().currentFeature;
@@ -141,29 +141,11 @@ static void RenderPlacement(Config* config, float menuResScale)
             ImGui::TextWrapped("%s", DlssNr::FinishedPictureStatus().c_str());
     }
 
-    bool beforeSr = config->DlssNrRunBeforeSr.value_or_default() ||
-                    (finishedPicture && config->DlssNrDeferredDlss.value_or_default());
+    const bool beforeSr = config->DlssNrRunBeforeSr.value_or_default() ||
+                          (finishedPicture && config->DlssNrDeferredDlss.value_or_default());
     const auto activeFeature = State::Instance().currentFeature;
     const bool rayReconstruction = activeFeature && activeFeature->GetUpscalerType() == Upscaler::DLSSD;
     const bool deferredActive = !finishedPicture && config->DlssNrDeferredDlss.value_or_default() && !rayReconstruction;
-    if (deferredActive)
-        ImGui::BeginDisabled();
-    if (ImGui::Checkbox(finishedPicture ? "Run the model before Super Resolution" : "Apply before Super Resolution",
-                        &beforeSr))
-    {
-        config->DlssNrRunBeforeSr = beforeSr;
-        if (finishedPicture)
-            config->DlssNrDeferredDlss = false;
-    }
-    if (deferredActive)
-        ImGui::EndDisabled();
-
-    HelpMarker(finishedPicture ? "Run the model at the smaller input size, upscale its changes with DLSS, then apply "
-                                 "them to the finished picture.\nExperimental: the colour transfer is approximate and "
-                                 "may look different. Requires DLSS SR; does not support RR."
-                               : "On: apply NR before SR or combined RR+SR. Off: apply it afterward.\nBefore RR is "
-                                 "experimental. Unsupported input layouts fall back after upscaling.");
-
     if (!finishedPicture)
     {
         bool residualAcrossRr = config->DlssNrResidualAcrossRr.value_or_default();
@@ -171,7 +153,7 @@ static void RenderPlacement(Config* config, float menuResScale)
         if (ImGui::Checkbox("Carry the pre-SR edit across RR (experimental)", &residualAcrossRr))
             config->DlssNrResidualAcrossRr = residualAcrossRr;
         ImGui::EndDisabled();
-        HelpMarker("Only with Apply before Super Resolution on and the game's Ray Reconstruction active.\nRuns the "
+        HelpMarker("Only with Generate model before upscale on and the game's Ray Reconstruction active.\nRuns the "
                    "model before SR but leaves the colour input untouched, then adds its edit back onto the RR+SR "
                    "output so it survives RR's denoise.\nThe edit is carried as a motion-vector-reprojected temporal "
                    "accumulator: the per-frame ray-trace noise averages out, the enhancement stays. Inert otherwise.");
@@ -191,9 +173,9 @@ static void RenderPlacement(Config* config, float menuResScale)
             config->DlssNrDeferredDlss = deferredDlss;
         HelpMarker("Compute NR at input resolution, upscale its changes with DLSS, then apply them after "
                    "SR.\nExperimental: may flicker and adds GPU cost. Requires DLSS on DX12 or its bridges; does not "
-                   "support RR.\nOverrides Apply before Super Resolution. Disable Hold frame, Compare and Debug view.");
+                   "support RR.\nForces Generate model before upscale on. Disable Hold frame, Compare and Debug view.");
         if (deferredDlss && rayReconstruction)
-            ImGui::TextWrapped("Generate before / apply after is unavailable with RR. Apply before Super Resolution "
+            ImGui::TextWrapped("Generate before / apply after is unavailable with RR. Generate model before upscale "
                                "controls NR placement.");
         else if (deferredDlss)
             ImGui::TextWrapped("Residual DLSS: %s", DlssNr::DeferredDlssStatus().c_str());
@@ -267,7 +249,7 @@ static void RenderStatus(Config* config, float menuResScale)
         // Keep the running indicator green, using the theme's HDR-adjusted text brightness.
         const auto textColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
         ImGui::PushStyleColor(ImGuiCol_Text,
-                             ImVec4(textColor.x * 0.55f, textColor.y * 0.80f, textColor.z * 0.55f, textColor.w));
+                              ImVec4(textColor.x * 0.55f, textColor.y * 0.80f, textColor.z * 0.55f, textColor.w));
         if (ms.has_value())
             ImGui::Text("Running%s - %.2f ms elapsed%s", vulkan ? " natively on Vulkan" : "", ms.value(), runSuffix);
         else if (vulkan)
@@ -1036,19 +1018,46 @@ void RenderMenu(Config* config, float menuResScale)
     if (auto header = ScopedCollapsingHeader("DLSS Neural Rendering"); header.IsHeaderOpen())
     {
         ScopedIndent indent {};
+        const float toggleGap = ImGui::GetStyle().ItemSpacing.x;
+        const float toggleWidth = (ImGui::GetContentRegionAvail().x - toggleGap) * 0.5f;
+        const float toggleRight = ImGui::GetCursorPosX() + toggleWidth + toggleGap;
         bool enabled = config->DlssNrEnabled.value_or_default();
-        if (ImGui::Checkbox("Enable Neural Rendering", &enabled))
+        if (PipelineUi::CheckboxWrapped("Enable Neural Rendering", &enabled, toggleWidth))
             config->DlssNrEnabled = enabled;
-        HelpMarker("Requires nvngx_dlssnr.dll and a compatible NVIDIA driver. Disabling NR stops its GPU work.");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Requires nvngx_dlssnr.dll and a compatible NVIDIA driver. Disabling NR stops its GPU work.");
+
+        const auto feature = State::Instance().currentFeature;
+        const bool rayReconstruction = feature && feature->GetUpscalerType() == Upscaler::DLSSD;
+        const bool finished = config->DlssNrFinishedPicture.value_or_default();
+        const bool deferredActive = !finished && config->DlssNrDeferredDlss.value_or_default() && !rayReconstruction;
+        bool generateBefore = config->DlssNrRunBeforeSr.value_or_default() ||
+                              (finished && config->DlssNrDeferredDlss.value_or_default()) || deferredActive;
+        ImGui::SameLine(toggleRight);
+        ImGui::BeginDisabled(deferredActive);
+        if (PipelineUi::CheckboxWrapped("Generate model before upscale", &generateBefore, toggleWidth))
+        {
+            config->DlssNrRunBeforeSr = generateBefore;
+            if (finished)
+                config->DlssNrDeferredDlss = false;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(
+                deferredActive ? "Generate before SR, apply after SR already runs the model before upscale."
+                : finished     ? "Run the model at the smaller input size, upscale its changes with DLSS, then apply "
+                                 "them to the finished picture.\nExperimental: the colour transfer is approximate and "
+                                 "may look different. Requires DLSS SR; does not support RR."
+                               : "On: generate and apply NR before SR or combined RR+SR. Off: run it afterward.\n"
+                                 "Before RR is experimental. Unsupported input layouts fall back after upscaling.");
 
         PipelineUi::View view;
         view.enabled = enabled;
         view.applyModel = config->DlssNrApplyModel.value_or_default();
         view.passes = config->DlssNrPasses.value_or_default();
         view.scalePercent = (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
-        const auto feature = State::Instance().currentFeature;
-        view.rayReconstruction = feature && feature->GetUpscalerType() == Upscaler::DLSSD;
-        const bool finished = config->DlssNrFinishedPicture.value_or_default();
+        view.rayReconstruction = rayReconstruction;
         const bool before = config->DlssNrRunBeforeSr.value_or_default();
         const bool deferred = config->DlssNrDeferredDlss.value_or_default();
         if (finished)
