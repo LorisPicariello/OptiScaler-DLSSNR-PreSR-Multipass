@@ -26,9 +26,9 @@
 #include <shaders/Shader_Dx12.h>
 #include <shaders/Shader_Dx12Utils.h>
 
-// Keep the existing twelve-frame descriptor budget, including two immutable clamp bindings.
+// Twelve-frame descriptor budget, including two clamp bindings and two DLSS enlargement passes.
 // A model chain reuses those two bindings regardless of its pass count.
-#define DLSSNR_NUM_OF_HEAPS 72
+#define DLSSNR_NUM_OF_HEAPS 96
 
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 {

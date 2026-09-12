@@ -134,7 +134,11 @@ int wmain(int argc,wchar_t** argv) try {
         expect(WaitForSingleObject(event,15000)==WAIT_OBJECT_0,"GPU fence timeout");
         check(allocator->Reset()); check(commands->Reset(allocator.Get(),nullptr));
     };
-    const UINT w=NVNGXProxy::useRr ? 2560 : 1920,h=NVNGXProxy::useRr ? 1440 : 1080,ow=3840,oh=2160;
+#ifndef NR_SMOKE_SCALE
+#define NR_SMOKE_SCALE 50
+#endif
+    const UINT w=NVNGXProxy::useRr ? 2560 : 3840*NR_SMOKE_SCALE/100,
+               h=NVNGXProxy::useRr ? 1440 : 2160*NR_SMOKE_SCALE/100,ow=3840,oh=2160;
     auto texture=[&](DXGI_FORMAT format,UINT width,UINT height) {
         D3D12_RESOURCE_DESC d {}; d.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D; d.Width=width; d.Height=height;
         d.DepthOrArraySize=d.MipLevels=1; d.Format=format; d.SampleDesc.Count=1; d.Flags=D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -173,6 +177,7 @@ int wmain(int argc,wchar_t** argv) try {
     for (auto* r: {carrier.Get(),exposure.Get()}) barrier(commands.Get(),r,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     DlssNr::PrivateUpscalerCreateDx12 info { w, h, ow, oh, (int)NVSDK_NGX_PerfQuality_Value_MaxPerf };
     info.rayReconstruction=NVNGXProxy::useRr; info.roughnessMode=1;
+    if (selected==DlssNr::PrivateUpscaler::DLSS) info.quality=NVSDK_NGX_PerfQuality_Value_MaxQuality;
     if (NVNGXProxy::useRr) { info.quality=NVSDK_NGX_PerfQuality_Value_MaxQuality; info.depthInverted=true; }
     auto feature=std::make_unique<DlssNr::PrivateUpscalerDx12>(selected);
     auto other=std::make_unique<DlssNr::PrivateUpscalerDx12>(selected);

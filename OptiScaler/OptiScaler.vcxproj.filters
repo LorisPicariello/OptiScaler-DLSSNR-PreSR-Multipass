@@ -1625,6 +1625,7 @@
     <ClCompile Include="dlssnr\DlssNr_ExposureReadback.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClInclude Include="dlssnr\DlssNr_ExposureScan_Internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_DeferredSr.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Enlarge.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Evaluate.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_Exposure.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="shaders\dlssnr\DlssNr_Dx12_FinishedCompose.cpp"><Filter>Source Files</Filter></ClCompile>

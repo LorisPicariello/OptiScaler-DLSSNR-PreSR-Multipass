@@ -128,5 +128,49 @@ int wmain(int argc, wchar_t** argv) try {
         ctx->UpdateSubresource(original.Get(),0,nullptr,result.data(),sizeof(result),0);
     }
     std::puts("PASS: 30 interpass clamps, finite RGB, bounded range, encoded identity and alpha");
+    settings = {};
+    settings.Width=2; settings.Height=1; settings.Passthrough=1;
+    settings.Mode=DlssNrMode_EncodeProxyResidual;
+    ctx->UpdateSubresource(original.Get(),0,nullptr,base.data(),sizeof(base),0);
+    ctx->UpdateSubresource(model.Get(),0,nullptr,edited.data(),sizeof(edited),0);
+    result=run();
+    for (int i=0;i<2;++i)
+    {
+        const float difference=edited[i].r-base[i].r;
+        expect(std::abs(result[i].r-(.5f+.5f*difference/(1+std::abs(difference))))<.0001f,
+               "Private enlargement proxy carrier encoding");
+    }
+    ctx->UpdateSubresource(model.Get(),0,nullptr,result.data(),sizeof(result),0);
+    settings.Mode=DlssNrMode_Resolve; settings.Transfer=2; settings.WhitePoint=1;
+    settings.ReversibleMode=2; settings.ApplyModel=1; settings.TransferStrength=settings.ColourStrength=1;
+    settings.MaxRatio=2;
+    result=run();
+    expect(same(result[0],edited[0]) && same(result[1],edited[1]), "DLSS carrier matched reconstruction");
+    const std::array<Pixel,2> neutralEnlargement {{{.5f,.5f,.5f,1},{.5f,.5f,.5f,1}}};
+    ctx->UpdateSubresource(model.Get(),0,nullptr,neutralEnlargement.data(),sizeof(neutralEnlargement),0);
+    result=run();
+    expect(same(result[0],base[0]) && same(result[1],base[1]), "Neutral DLSS carrier altered base detail");
+    const std::array<Pixel,2> hdrBase {{{2.0f,.3f,4.0f,1},{.02f,1.5f,.4f,1}}};
+    ctx->UpdateSubresource(original.Get(),0,nullptr,hdrBase.data(),sizeof(hdrBase),0);
+    settings.Passthrough=0;
+    result=run();
+    expect(same(result[0],hdrBase[0]) && same(result[1],hdrBase[1]), "Neutral DLSS carrier altered HDR base");
+    ctx->UpdateSubresource(original.Get(),0,nullptr,base.data(),sizeof(base),0);
+    settings = {}; settings.Mode=DlssNrMode_ResizePrivateGuides;
+    settings.Width=settings.Height=1; settings.GuideWidth=1; settings.GuideHeight=1;
+    settings.DebugView=1; // Select the second depth sample through an active-region offset.
+    settings.TransferStrength=settings.ColourStrength=1; settings.CompareSwap=1;
+    settings.MvScaleX=2; settings.MvScaleY=3;
+    ctx->UpdateSubresource(model.Get(),0,nullptr,edited.data(),sizeof(edited),0);
+    result=run();
+    expect(std::abs(result[0].r-base[1].r)<.0001f, "Private depth active region resize");
+    ctx->CopyResource(readback.Get(),keep.Get());
+    D3D11_MAPPED_SUBRESOURCE mapped {};
+    check(ctx->Map(readback.Get(),0,D3D11_MAP_READ,0,&mapped));
+    const auto velocity=*static_cast<const Pixel*>(mapped.pData);
+    ctx->Unmap(readback.Get(),0);
+    expect(std::abs(velocity.r-edited[1].r*2)<.0001f && std::abs(velocity.g-edited[1].g*3)<.0001f,
+           "Private motion active region or pixel scale");
+    std::puts("PASS: DLSS proxy carrier, matched reconstruction, neutral identity, depth/motion regions and scale");
     return 0;
 } catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }

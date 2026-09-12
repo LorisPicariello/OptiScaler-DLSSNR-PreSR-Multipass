@@ -159,6 +159,7 @@ auto DlssNr_Dx12::State::LateContext::Capture(ID3D12GraphicsCommandList* cmd, NV
     params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &flags);
     params->Get(NVSDK_NGX_Parameter_Reset, &gameReset);
     frame.Reset = gameReset != 0;
+    params->Get(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, &frame.FrameTimeMs);
     frame.DepthInverted = (flags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
     frame.MotionVectorsLowResolution = (flags & NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) != 0;
     frame.RayReconstruction = rr;

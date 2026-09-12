@@ -13,6 +13,13 @@ auto DlssNr_Dx12::State::FinishedPictureResetCommandList(ID3D12CommandList* cmd)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex);
     lifetime.ResetRecording(cmd);
+    ID3D12CommandList* real = nullptr;
+    auto* identity = Util::CheckForRealObject(__FUNCTION__, cmd, (IUnknown**)&real) ? real : cmd;
+    if (enlarger && !enlarger->submitted && enlarger->creation == identity)
+    {
+        enlarger->failed = true;
+        enlargementStatus = "DLSS enlargement initialization was discarded; use Retry.";
+    }
     for (auto& model : nr.models) model.ResetRecording(cmd);
     if (inputHold.captureCommands == cmd)
     {
@@ -67,6 +74,18 @@ auto DlssNr_Dx12::State::FinishedPictureSubmitted(ID3D12CommandQueue* queue, UIN
 {
     std::lock_guard<std::recursive_mutex> lock(mutex);
     lifetime.Submitted(queue, count, lists);
+    if (enlarger && !enlarger->submitted)
+    {
+        ID3D12CommandQueue* real = nullptr;
+        auto* identity = Util::CheckForRealObject(__FUNCTION__, queue, (IUnknown**)&real) ? real : queue;
+        if (identity == enlarger->queue.Get())
+            for (UINT i = 0; i < count; ++i)
+            {
+                ID3D12CommandList* realList = nullptr;
+                auto* list = Util::CheckForRealObject(__FUNCTION__, lists[i], (IUnknown**)&realList) ? realList : lists[i];
+                if (list == enlarger->creation) enlarger->submitted = true;
+            }
+    }
     for (auto& model : nr.models) model.Submitted(queue, count, lists);
     for (UINT i = 0; i < count; ++i)
         if (lists[i] == inputHold.captureCommands)

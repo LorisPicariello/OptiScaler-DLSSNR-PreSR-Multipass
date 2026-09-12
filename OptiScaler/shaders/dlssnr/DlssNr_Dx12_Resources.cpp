@@ -211,6 +211,8 @@ auto DlssNr_Dx12::State::GetResource(NVSDK_NGX_Parameter* params, const char* a,
 auto DlssNr_Dx12::State::ReleaseResources() -> void
 {
     std::lock_guard<std::recursive_mutex> nrLock(mutex);
+    ReleaseEnlarger();
+    enlargementStatus.clear();
     deferredSr.ReleaseResources();
 
     lifetime.Collect();

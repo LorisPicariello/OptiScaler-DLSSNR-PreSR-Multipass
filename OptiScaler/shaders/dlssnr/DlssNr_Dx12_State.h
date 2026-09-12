@@ -60,6 +60,25 @@ struct DlssNr_Dx12::State
     using NrState = DlssNr::Detail::ModelStateDx12;
     NrState nr;
     DlssNr_Dx12& shader;
+    struct Enlarger
+    {
+        template <typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
+        std::unique_ptr<DlssNr::PrivateUpscalerDx12> dlss;
+        ComPtr<ID3D12Resource> input, output, depth, motion, exposure;
+        ComPtr<ID3D12CommandQueue> queue;
+        ID3D12CommandList* creation = nullptr;
+        unsigned w = 0, h = 0, outW = 0, outH = 0;
+        uint64_t lastFrame = 0;
+        bool submitted = false, failed = false, depthInverted = false, readable = false, reset = true;
+        ~Enlarger() { dlss.reset(); } // Release NGX before its borrowed input/output resources.
+    };
+    std::unique_ptr<Enlarger> enlarger;
+    std::shared_ptr<unsigned> retiredEnlargers = std::make_shared<unsigned>(0);
+    std::string enlargementStatus;
+    void ReleaseEnlarger();
+    ID3D12Resource* EnlargeMatchedResidual(ID3D12GraphicsCommandList* cmd, ID3D12Device* device,
+        ID3D12Resource* proxy, ID3D12Resource* answer, ID3D12Resource* depth, ID3D12Resource* motion,
+        const DlssNrFrameInfo& frame, const DlssNrConstants& resolve, bool reset, ID3D12CommandQueue* queue);
 
     // What the pass costs on the GPU, for the breakdown in the overlay.
     std::unique_ptr<DlssNrGpuTime> gpuTime;

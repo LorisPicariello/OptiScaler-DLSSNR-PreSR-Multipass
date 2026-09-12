@@ -343,8 +343,8 @@ class Config
     // light source, whatever the model returns.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
 
-    // How a model that worked below the frame's size is brought back. 0 classic, 1 matched
-    // residual. Only has an effect when Model resolution is under 100%.
+    // Below 100%: 0 classic, 1 spatial matched residual, 2 private DLSS SR matched residual.
+    // Mode 2 requires post-upscale processing through DX12 (including finished-picture NR).
     CustomOptional<uint32_t> DlssNrTransfer { 1 };
 
     // Measure the white point from the frame instead of taking it from the slider. On a frame the

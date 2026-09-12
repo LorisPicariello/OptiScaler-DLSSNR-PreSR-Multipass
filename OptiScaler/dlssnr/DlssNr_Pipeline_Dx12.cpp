@@ -133,6 +133,7 @@ ShaderPass_Dx12 MakeDlssNrPass(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12
     unsigned int reset = 0;
     parameters->Get(NVSDK_NGX_Parameter_Reset, &reset);
     frame.Reset = reset != 0;
+    parameters->Get(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, &frame.FrameTimeMs);
     parameters->Get(NVSDK_NGX_Parameter_MV_Scale_X, &frame.MvScaleX);
     parameters->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &frame.MvScaleY);
     parameters->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &frame.PreExposure);

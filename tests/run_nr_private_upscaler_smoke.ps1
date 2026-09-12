@@ -4,6 +4,7 @@ param(
     [string]$SrDirectory,
     [string]$VcVars,
     [switch]$RayReconstruction,
+    [ValidateSet(50,80)][int]$ScalePercent = 50,
     [switch]$CyberpunkProfile
 )
 $ErrorActionPreference = 'Stop'
@@ -26,7 +27,7 @@ $build = @"
 @echo off
 call "$VcVars" >nul
 if errorlevel 1 exit /b 1
-cl /nologo /std:c++20 /EHsc /O2 /MD /I "$out" /I OptiScaler /I OptiScaler/include /I external/nvngx_dlss_sdk /I external/xess/inc/xess /I external/FidelityFX-SDK/ffx-api/include/ffx_api tests/nr_private_upscaler_smoke.cpp /Fe:"$out/private_smoke.exe" /Fo:"$out/private_smoke.obj" /link /LIBPATH:OptiScaler/library/fsr2 ffx_fsr2_api_x64.lib ffx_fsr2_api_dx12_x64.lib d3d12.lib dxgi.lib dxguid.lib
+cl /nologo /std:c++20 /EHsc /O2 /MD /DNR_SMOKE_SCALE=$ScalePercent /I "$out" /I OptiScaler /I OptiScaler/include /I external/nvngx_dlss_sdk /I external/xess/inc/xess /I external/FidelityFX-SDK/ffx-api/include/ffx_api tests/nr_private_upscaler_smoke.cpp /Fe:"$out/private_smoke.exe" /Fo:"$out/private_smoke.obj" /link /LIBPATH:OptiScaler/library/fsr2 ffx_fsr2_api_x64.lib ffx_fsr2_api_dx12_x64.lib d3d12.lib dxgi.lib dxguid.lib
 "@
 Set-Content -LiteralPath "$out/build.cmd" -Value $build
 Push-Location $repo

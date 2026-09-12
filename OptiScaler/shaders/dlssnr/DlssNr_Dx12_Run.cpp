@@ -335,6 +335,8 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     };
 
     int result = NVSDK_NGX_Result_Success;
+    const bool enlargementReset = nr.reset;
+    bool compositionSucceeded = false;
 
     for (unsigned int pass = 0; pass < effectivePasses && result == NVSDK_NGX_Result_Success; ++pass)
     {
@@ -415,6 +417,21 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
 
         ID3D12Resource* resolveProxy = superDownOk ? nr.colorCopy : modelInput;
         ID3D12Resource* resolveAnswer = superDownOk ? nr.outputNative : finalAnswer;
+        bool enlargementReady = true;
+        if (cfg.DlssNrTransfer.value_or_default() == 2 && reduced)
+        {
+            auto* enlarged = EnlargeMatchedResidual(cmdList, device, modelInput, finalAnswer, depthIn, motionIn,
+                                                    frame, resolveParams, enlargementReset, timingQueue);
+            enlargementReady = enlarged != nullptr;
+            if (enlarged) { resolveAnswer = enlarged; resolveParams.Transfer = 2; }
+            if (enlarged && resolveParams.DebugView == 2)
+            { resolveAnswer = finalAnswer; resolveParams.Transfer = 1; } // Inspect the actual model answer.
+        }
+        else
+        {
+            ReleaseEnlarger();
+            enlargementStatus.clear();
+        }
 
         // Resolve pre-SR inputs without UAV support through an owned scratch and copy-back.
         ID3D12Resource* resolveOriginal = targetSupportsUav ? nr.hdrCopy : target;
@@ -431,8 +448,9 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
 
-        const bool resolved = shader.DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer,
+        const bool resolved = enlargementReady && shader.DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer,
                                                   resolveOriginal, motionIn, exposureTex, resolveTarget, nullptr);
+        compositionSucceeded = resolved;
 
         if (resolved && !targetSupportsUav)
         {
@@ -485,8 +503,8 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
 
     // Failed evaluations leave the game's original image intact. A successful copy-back writes
     // only the active rectangle and restores both resources before DLSS consumes the image.
-    FinishColor(result == NVSDK_NGX_Result_Success && finalAnswer != nullptr);
-    if (result == NVSDK_NGX_Result_Success && finalAnswer != nullptr)
+    FinishColor(compositionSucceeded);
+    if (compositionSucceeded)
         ++nr.successfulDispatches;
 
     EndGpuTiming(cmdList, timingQueue);

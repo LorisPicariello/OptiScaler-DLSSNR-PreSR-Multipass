@@ -501,6 +501,28 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Experimental private-DLSS carrier, not an ordinary colour image. Neutral 0.5 encodes zero;
     // values below it carry darkening. A reversible signed compression avoids clipping negative
     // edits at the DLSS input. ExposurePreMul is a fixed scale shared by this frame's two stages.
+    if (gMode == 9)
+    {
+        float3 source = gSource.Load(int3(id.xy, 0)).rgb;
+        float3 answer = gModel.Load(int3(id.xy, 0)).rgb;
+        if (gPassthrough == 0) { source = SrgbToLinear(source); answer = SrgbToLinear(answer); }
+        float3 d = SanitizeFinite3(answer - source, 0.0);
+        gTarget[id.xy] = float4(0.5 + 0.5 * d / (1.0 + abs(d)), 1.0);
+        return;
+    }
+    if (gMode == 10)
+    {
+        // Mode-local fields: guide active sizes/origins, and motion-to-working-pixel scale.
+        uint2 dp = min(uint2(uv * uint2(gGuideWidth, gGuideHeight)),
+                       uint2(gGuideWidth, gGuideHeight) - 1) + uint2(gDebugView, gCompareMode);
+        uint2 size = uint2(gTransferStrength, gColourStrength);
+        uint2 mp = min(uint2(uv * size), size - 1) + uint2(gCompareSwap, gTransfer);
+        float z = gSource.Load(int3(dp, 0)).r;
+        float2 mv = gModel.Load(int3(mp, 0)).xy * float2(gMvScaleX, gMvScaleY);
+        gTarget[id.xy] = float4(isfinite(z) ? z : 0.0, 0, 0, 1);
+        gKeep[id.xy] = float4(all(isfinite(mv)) ? mv : float2(0, 0), 0, 1);
+        return;
+    }
     if (gMode == 5)
     {
         float3 difference = SanitizeFinite3(gModel.Load(int3(id.xy, 0)).rgb -
@@ -836,6 +858,11 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     }
 
     float3 edit = model - proxy;
+    if (gTransfer == 2)
+    {
+        float3 carrier = clamp(2.0 * SanitizeFinite3(modelSample.rgb, 0.5) - 1.0, -0.999, 0.999);
+        edit = carrier / (1.0 - abs(carrier));
+    }
 
     // Coring was tried here and removed: the per-frame churn's amplitude overlaps the real detail's,
     // so an amplitude threshold cannot separate them -- it only relocated the noise to the threshold.
@@ -886,7 +913,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     gSource.GetDimensions(proxyW, proxyH);
     const bool modelRanSmall = proxyW != gWidth || proxyH != gHeight;
 
-    if (gTransfer == 1 && modelRanSmall)
+    if ((gTransfer == 1 && modelRanSmall) || gTransfer == 2)
     {
         // Saturated, because that is what the encode does and this has to reproduce it exactly.
         //
@@ -919,6 +946,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // At the same rate there is no residual to carry: the model's own picture is already at the
         // frame's resolution, and P + (m - p) collapses to m exactly.
         model = CubeScaleResidual(fullProxy, fullProxy + edit);
+        if (gTransfer == 2) modelDirect = model;
     }
 
     // The composition. The model's answer is not treated as a difference to add onto the frame -- it

@@ -19,6 +19,8 @@ auto DlssNr_Dx12::State::DeferredDlssStatus() -> std::string
 
 auto DlssNr_Dx12::State::RetryAfterFailure() -> void
 {
+    ReleaseEnlarger();
+    enlargementStatus.clear();
     nr.failed = false;
     nr.reason = "";
     nr.reset = true;
@@ -26,6 +28,13 @@ auto DlssNr_Dx12::State::RetryAfterFailure() -> void
 
 auto DlssNr_Dx12::State::ConsumeControls() -> void
 {
+    const auto& cfg = *Config::Instance();
+    if (!cfg.DlssNrEnabled.value_or_default() || cfg.DlssNrTransfer.value_or_default() != 2 ||
+        cfg.DlssNrWorkingScale.value_or_default() >= 1.0f)
+    {
+        ReleaseEnlarger();
+        enlargementStatus.clear();
+    }
     const auto requested = DlssNr::ReadControlRequests();
     if (requested.retryGeneration != controls.retryGeneration)
     {
@@ -44,8 +53,8 @@ auto DlssNr_Dx12::State::Publish() -> void
 {
     DlssNr::PublishStatus(
         &shader, DlssNr::Backend::Dx12,
-        { !nr.failed && modelRunning,
-          nr.failed ? nr.reason : "",
+        { !nr.failed && modelRunning && enlargementStatus.empty(),
+          nr.failed ? nr.reason : enlargementStatus,
           lastGpuTime,
           frames,
           { nr.exposureFrames, nr.exposureOfferedNow, nr.exposureEverOffered, nr.gameExposure, nr.gamePreExposure },

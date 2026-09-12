@@ -26,7 +26,9 @@ enum DlssNrMode : uint32_t
     DlssNrMode_EncodeResidual = 5, // NR-composed minus original; signed difference encoded around 0.5
     DlssNrMode_ApplyResidual = 6,  // decode private DLSS result and add to clean SR output
     DlssNrMode_UnitExposure = 7,   // constant exposure for the private DLSS feature
-    DlssNrMode_ClampProxy = 8      // restore the encoded RGB range between model passes
+    DlssNrMode_ClampProxy = 8,     // restore the encoded RGB range between model passes
+    DlssNrMode_EncodeProxyResidual = 9,
+    DlssNrMode_ResizePrivateGuides = 10
 };
 
 // The meter's grid. 64 x 64 tiles over the whole frame, whatever its size.
@@ -97,6 +99,7 @@ struct DlssNrFrameInfo
     // the DX11/Vulkan bridges use their successfully submitted frame counter. A feature created in an
     // epoch is never evaluated until this value changes.
     unsigned long long SubmissionEpoch = 0;
+    float FrameTimeMs = 16.67f;
 
     // The game's own exposure: a 1x1 texture holding, in the SDK's words, "the final exposure scale".
     //
@@ -265,7 +268,7 @@ class DlssNr_Common
         constants.ColourStrength = config.DlssNrColourStrength.value_or_default();
         constants.DebugView = config.DlssNrDebugView.value_or_default();
         constants.MaxRatio = config.DlssNrMaxRatio.value_or_default();
-        constants.Transfer = config.DlssNrTransfer.value_or_default();
+        constants.Transfer = std::min(config.DlssNrTransfer.value_or_default(), 1u);
         constants.DebugScale = config.DlssNrWhitePointScale.value_or_default();
         constants.CompareMode = config.DlssNrCompare.value_or_default();
         constants.CompareSplit = config.DlssNrCompareSplit.value_or_default();

@@ -50,8 +50,8 @@ void RenderInput(Config* config, float menuResScale)
         if (!reduced)
             ImGui::BeginDisabled();
 
-        static const char* enlargeNames[] = { "Classic", "Matched residual" };
-        int enlarge = config->DlssNrTransfer.value_or_default() == 1 ? 1 : 0;
+        static const char* enlargeNames[] = { "Classic", "Matched residual", "Matched residual + DLSS" };
+        int enlarge = (int) std::min(config->DlssNrTransfer.value_or_default(), 2u);
 
         if (ImGui::Combo("Enlargement", &enlarge, enlargeNames, IM_ARRAYSIZE(enlargeNames)))
             config->DlssNrTransfer = (uint32_t) enlarge;
@@ -59,7 +59,7 @@ void RenderInput(Config* config, float menuResScale)
         if (!reduced)
             ImGui::EndDisabled();
 
-        HelpMarker("Below 100%: enlarge the whole output or only the NR difference.");
+        HelpMarker("Below 100%: enlarge the output or the NR difference. DLSS requires post-upscale DX12 processing.");
     }
     static const char* reversibleNames[] = { "Off (soft knee)", "Neutwo proxy + composed", "Neutwo proxy + replace",
                                              "Hybrid proxy + composed", "Hybrid proxy + replace" };
