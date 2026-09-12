@@ -3,10 +3,12 @@ param(
     [string]$Runtime,
     [string]$SrDirectory,
     [string]$VcVars,
-    [switch]$RayReconstruction
+    [switch]$RayReconstruction,
+    [switch]$CyberpunkProfile
 )
 $ErrorActionPreference = 'Stop'
 if ($RayReconstruction -and $Backend -ne 'DLSS') { throw '-RayReconstruction requires -Backend DLSS.' }
+if ($CyberpunkProfile -and !$RayReconstruction) { throw '-CyberpunkProfile requires -RayReconstruction.' }
 $repo = Split-Path $PSScriptRoot -Parent
 if (!$VcVars) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
@@ -41,6 +43,12 @@ try {
         $arguments += (Resolve-Path -LiteralPath $SrDirectory).Path
         if ($RayReconstruction) { $arguments += '--rr' }
     }
-    & "$out/private_smoke.exe" @arguments
+    $executable = "$out/private_smoke.exe"
+    if ($CyberpunkProfile) {
+        # Activate the NVIDIA executable-name profile with the offscreen harness, not the game binary.
+        $executable = "$out/Cyberpunk2077.exe"
+        Copy-Item -LiteralPath "$out/private_smoke.exe" -Destination $executable -Force
+    }
+    & $executable @arguments
     if ($LASTEXITCODE) { throw 'Private adapter GPU smoke failed.' }
 } finally { Pop-Location }

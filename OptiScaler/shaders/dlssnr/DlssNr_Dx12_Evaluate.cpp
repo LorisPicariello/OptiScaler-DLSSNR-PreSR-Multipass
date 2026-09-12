@@ -50,7 +50,7 @@ void DlssNr_Dx12::State::EvaluateInternal(ID3D12GraphicsCommandList* cmd, NVSDK_
     else
         late.Cancel();
 
-    // The game's SR or RR+SR consumes untouched Color. A separate SR-only context upscales
+    // The game's SR or RR+SR consumes untouched Color. A separate private upscaler reconstructs
     // the NR edit, then applies it after the matching evaluation or saves it for presentation.
     if (!cmd || !params)
     {

@@ -101,6 +101,7 @@ void barrier(ID3D12GraphicsCommandList* c,ID3D12Resource* r,D3D12_RESOURCE_STATE
     c->ResourceBarrier(1,&x);
 }
 int wmain(int argc,wchar_t** argv) try {
+    std::setvbuf(stdout,nullptr,_IONBF,0);
     expect(argc>=2,"Usage: private_smoke <0 DLSS|1 FSR2|2 FFX|3 XeSS> [runtime DLL] [DLSS SR directory]");
     const auto selected = DlssNr::GetPrivateUpscaler(_wtoi(argv[1]));
     if(selected==DlssNr::PrivateUpscaler::DLSS) {

@@ -178,10 +178,13 @@ struct PrivateUpscalerDx12::Impl
             p->Set(NVSDK_NGX_Parameter_PerfQualityValue, info.quality);
             unsigned flags = (inverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0) |
                              (jittered ? NVSDK_NGX_DLSS_Feature_Flags_MVJittered : 0) |
-                             (!highMv ? NVSDK_NGX_DLSS_Feature_Flags_MVLowRes : 0);
+                             (!highMv ? NVSDK_NGX_DLSS_Feature_Flags_MVLowRes : 0) |
+                             (rayReconstruction ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR : 0);
             p->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, flags);
             if (rayReconstruction)
             {
+                // RR game profiles can reject LDR creation (Cyberpunk: BAD00005).
+                // The bounded residual is a linear float signal; keep exposure fixed at 1.
                 // Match NVIDIA's RR creation helper, including required fields whose
                 // absence may appear to work with a standalone driver's default table.
                 p->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, static_cast<int>(flags));

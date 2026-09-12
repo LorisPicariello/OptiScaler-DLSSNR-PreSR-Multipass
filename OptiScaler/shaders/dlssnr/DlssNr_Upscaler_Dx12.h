@@ -33,7 +33,8 @@ struct PrivateRrInputsDx12
 };
 // Borrowed resources, zero colour/depth/motion offsets, explicit active extents.
 // RR guides carry their own offsets. States are restored after evaluation.
-// Exposure must be a unit-valued texture. The carrier is LDR, with no sharpening or auto exposure.
+// Exposure must be a unit-valued texture, with no sharpening or auto exposure.
+// RR uses linear HDR mode for its bounded float carrier; SR retains LDR mode.
 struct PrivateUpscalerFrameDx12
 {
     PrivateUpscalerResourceDx12 color, depth, motion, exposure;
