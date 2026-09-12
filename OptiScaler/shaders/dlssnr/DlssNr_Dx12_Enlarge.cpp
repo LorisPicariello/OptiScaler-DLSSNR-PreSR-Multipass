@@ -39,7 +39,9 @@ ID3D12Resource* DlssNr_Dx12::State::EnlargeMatchedResidual(ID3D12GraphicsCommand
     }
     // The swapchain queue can be Streamline's presentation queue, not the NR producer.
     // Native processing learns its queue from the actual creation submission below.
-    auto* queue = timingQueue;
+    // IFeature_Dx12 fills timingQueue from currentCommandQueue even for native games.
+    // Only independent bridge/presentation command lists supply an authoritative producer.
+    auto* queue = (frame.IndependentCommands || frame.FinishedPicture) ? timingQueue : nullptr;
     ID3D12CommandQueue* realQueue = nullptr;
     if (queue && Util::CheckForRealObject(__FUNCTION__, queue, (IUnknown**)&realQueue)) queue = realQueue;
     if (cmd->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT ||
@@ -129,6 +131,9 @@ ID3D12Resource* DlssNr_Dx12::State::EnlargeMatchedResidual(ID3D12GraphicsCommand
     f.jitterX = f.jitterY = 0;
     f.frameTimeMs = std::isfinite(frame.FrameTimeMs) && frame.FrameTimeMs > 0 ? frame.FrameTimeMs : 16.67f;
     ok = g.dlss->Evaluate(cmd, f);
+    if (ok && g.lastFrame == 0)
+        LOG_INFO("NR matched residual: first private DLSS SR evaluation succeeded on producer queue {}",
+                 (void*)g.queue.Get());
     for (auto* r : { g.input.Get(), g.depth.Get(), g.motion.Get() })
         Barrier(cmd, r, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     Barrier(cmd, g.output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);

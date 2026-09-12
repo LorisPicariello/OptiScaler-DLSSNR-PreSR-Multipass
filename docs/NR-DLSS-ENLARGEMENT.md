@@ -25,6 +25,9 @@ Reset accounting uses NR evaluations, not generated presentation frames.
 
 Initialization learns the producer queue from the actual submission of its command list; the
 swapchain's potentially separate Streamline presentation queue is not used as a gate.
+The native `IFeature_Dx12` timing-queue argument is also a presentation-queue hint; it must not
+invalidate the learned producer. Only independent bridge/finished-picture lists supply an
+authoritative queue for recreation checks.
 Resizes/explicit queue changes and Retry retire the previous context using a dedicated instance
 of NR's GPU lifetime tracker, covering only that context's recordings. Unrelated NR recordings
 cannot pin it. Active and retired contexts continue receiving submission/reset notifications.
