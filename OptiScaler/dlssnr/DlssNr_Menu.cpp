@@ -21,7 +21,7 @@
 namespace DlssNr
 {
 
-// The "(?)" marker every control carries, matching the rest of the menu.
+// Compact contextual help, matching the rest of the menu.
 static void HelpMarker(const char* tip)
 {
     ImGui::SameLine();
@@ -85,17 +85,13 @@ static bool DeferredSlider(const char* label, Option* opt, float mn, float mx, f
     }
 
     if (std::strcmp(label, "Intensity") == 0)
-        HelpMarker("Overall enhancement strength for this pass. 1 = default; results depend on the profile.\nValues "
-                   "above 1 are experimental; the runtime may clamp or ignore them.");
+        HelpMarker("Enhancement strength. 1 = default.");
     else if (std::strcmp(label, "Local structure") == 0)
-        HelpMarker("Fine detail and local contrast requested from the model (high-frequency structure).\n1 = default; "
-                   "values above 1 are experimental.");
+        HelpMarker("Fine detail and local contrast. 1 = default.");
     else if (std::strcmp(label, "Local tone") == 0)
-        HelpMarker("Broad brightness and lighting changes requested from the model (low-frequency tone).\nLater passes "
-                   "default to 0. Values above 1 are experimental.");
+        HelpMarker("Broad lighting changes. Later passes default to 0.");
     else if (std::strcmp(label, "Skin structure") == 0)
-        HelpMarker("Fine detail for pixels the model identifies as skin. -1 follows Local structure; 0 reduces skin "
-                   "detail.\nSkin colour is controlled separately. Values above 1 are experimental.");
+        HelpMarker("Skin detail. -1 follows Local structure.");
     return changed;
 }
 
@@ -149,18 +145,14 @@ static void RenderPlacement(Config* config, float menuResScale)
         if (ImGui::Checkbox("Carry the pre-SR edit across RR (experimental)", &residualAcrossRr))
             config->DlssNrResidualAcrossRr = residualAcrossRr;
         ImGui::EndDisabled();
-        HelpMarker("Only with Generate model before upscale on and the game's Ray Reconstruction active.\nRuns the "
-                   "model before SR but leaves the colour input untouched, then adds its edit back onto the RR+SR "
-                   "output so it survives RR's denoise.\nThe edit is carried as a motion-vector-reprojected temporal "
-                   "accumulator: the per-frame ray-trace noise averages out, the enhancement stays. Inert otherwise.");
+        HelpMarker("Keep the NR edit after RR. Requires early generation and RR.");
 
         ImGui::BeginDisabled(deferredActive || !beforeSr || !residualAcrossRr);
         float residualBlend = config->DlssNrResidualAcrossRrBlend.value_or_default();
         if (ImGui::SliderFloat("Detail accumulation rate", &residualBlend, 0.01f, 1.0f, "%.2f"))
             config->DlssNrResidualAcrossRrBlend = std::clamp(residualBlend, 0.01f, 1.0f);
         ImGui::EndDisabled();
-        HelpMarker("How fast the carried edit builds up. Lower = stabler but slower to appear; 1.0 = no accumulation "
-                   "(each frame's raw residual, which flickers). Default 0.08.");
+        HelpMarker("Lower values accumulate more slowly and reduce flicker.");
     }
     bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
     if (!finishedPicture)
@@ -176,7 +168,7 @@ static void RenderPlacement(Config* config, float menuResScale)
 
     // The toggle can be bound to a key, and nobody would think to look for it under Keybinds
     // unless told. Dimmed, because it is a note rather than a setting.
-    ImGui::TextDisabled("Set the NR toggle shortcut under Keybinds.");
+
 }
 
 static void RenderStatus(Config* config, float menuResScale)
@@ -255,8 +247,7 @@ static void RenderStatus(Config* config, float menuResScale)
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("Time between the start and end of NR on the GPU, including delays while other work "
                               "runs.\nCompare FPS to check the effect on game performance.");
-        if (finishedPicture)
-            ImGui::TextDisabled("Includes time shared with other GPU work.");
+
         if (ms.has_value())
         {
             const auto& state = State::Instance();
@@ -294,12 +285,8 @@ static void RenderInput(Config* config, float menuResScale)
         pendingScale = -1;
     }
 
-    HelpMarker("NR resolution relative to the image it processes. 50% halves width and height; 100% uses the full "
-               "size.\nLower values reduce cost and fine detail. Above 100% increases cost. Game output resolution is "
-               "unchanged.");
+    HelpMarker("50% halves width and height. 100% uses the full input size.");
 
-    if (scalePercent > 100)
-        ImGui::TextDisabled("NR scale: %.2fx. Higher resolution increases GPU cost.", scalePercent / 100.0f);
 
     if (scalePercent > 100)
     {
@@ -312,8 +299,7 @@ static void RenderInput(Config* config, float menuResScale)
         if (ImGui::Combo("Downscaler (NR)", &ds, dsNames, IM_ARRAYSIZE(dsNames)))
             config->DlssNrScalingDownscaler = (Scaler) ds;
 
-        HelpMarker("Filter used to reduce NR output when Model resolution exceeds 100%.\nSharper filters may introduce "
-                   "ringing around edges.");
+        HelpMarker("Downsampling filter for resolutions above 100%.");
     }
 
     // Meaningful only when the model runs BELOW the frame's size. At 100% -- and above, where
@@ -334,8 +320,7 @@ static void RenderInput(Config* config, float menuResScale)
         if (!reduced)
             ImGui::EndDisabled();
 
-        HelpMarker("Below 100% model resolution: Classic enlarges the model output; Matched residual enlarges only its "
-                   "changes.\nMatched residual can reduce blur and colour shifts. No effect at 100% or above.");
+        HelpMarker("Below 100%: enlarge the whole output or only the NR difference.");
     }
 
     // Experimental. 0 off (soft knee), 1 Neutwo + our composition, 2 Neutwo + pure-inverse replace,
@@ -348,11 +333,9 @@ static void RenderInput(Config* config, float menuResScale)
     if (ImGui::Combo("HDR mapping (experimental)", &reversible, reversibleNames, IM_ARRAYSIZE(reversibleNames)))
         config->DlssNrReversibleMode = (uint32_t) reversible;
 
-    HelpMarker("Choose how HDR brightness is mapped for NR.\nSoft knee compresses highlights. Neutwo uses a reversible "
-               "curve. Hybrid preserves midtones and compresses highlights.\nComposed uses the strength and highlight "
-               "controls. Replace bypasses them and may flicker.");
+    HelpMarker("HDR mapping curve. Replace bypasses strength and highlight controls.");
 
-    ImGui::TextDisabled("HDR input settings. Adjust the brightness range presented to NR.");
+
 
     {
         // Logarithmic, because the useful range is not linear. A quarter to 240: the low end because
@@ -397,8 +380,7 @@ static void RenderInput(Config* config, float menuResScale)
                 // step, and so no way for the two to disagree.
             }
 
-            HelpMarker("Manual: use Paper white. Game exposure: use exposure supplied by the game.\nScanned exposure: "
-                       "estimate it from game buffers; requires calibration and may select the wrong buffer.");
+            HelpMarker("Game exposure uses supplied data. Scanned exposure requires calibration and may select the wrong buffer.");
 
             // Availability for the option currently chosen, using the HDR-adjusted theme.
             if (source == 1)
@@ -432,11 +414,11 @@ static void RenderInput(Config* config, float menuResScale)
                     if (watching == 0)
                         ImGui::TextDisabled("No exposure candidates found.");
                     else
-                        ImGui::TextDisabled("%u candidates; move between bright and dark areas to test them.",
+                        ImGui::TextDisabled("%u exposure candidates",
                                             watching);
                 }
                 else if (!haveAnchor)
-                    ImGui::TextDisabled("Exposure candidate found. Adjust Paper white, then select Anchor here.");
+                    ImGui::TextDisabled("Exposure candidate found.");
                 // Once anchored, the scan -> white point readout sits above the sliders below; it is
                 // not repeated up here.
             }
@@ -542,8 +524,7 @@ static void RenderInput(Config* config, float menuResScale)
                         config->DlssNrWhitePointScale = pw;
                 }
 
-                HelpMarker("Adjust the selected calibration point, or set the value for the next point.\nUse Anchor "
-                           "here to save the current lighting condition.");
+                HelpMarker("Adjust this point, then select Anchor here to save it.");
             }
 
             // The trim multiplies the interpolated result, and in the steady state it is the control
@@ -561,8 +542,7 @@ static void RenderInput(Config* config, float menuResScale)
                 if (ImGui::SmallButton("Reset##scantrim"))
                     config->DlssNrScanTrim = 1.0f;
 
-                HelpMarker("Multiply the calibrated white point. Anchor here saves the adjusted value and resets this "
-                           "multiplier to 1.");
+                HelpMarker("Adjust calibrated brightness. Anchoring resets Trim to 1.");
             }
         }
         else if (wpSource == 1)
@@ -593,7 +573,7 @@ static void RenderInput(Config* config, float menuResScale)
                     config->DlssNrWhitePointTrim = 1.0f;
             }
 
-            HelpMarker("Multiply the white point derived from game exposure. 1 = no adjustment.");
+            HelpMarker("Exposure multiplier. 1 = unchanged.");
         }
         else
         {
@@ -607,8 +587,7 @@ static void RenderInput(Config* config, float menuResScale)
             if (ImGui::SliderFloat("Paper white", &wpScale, 0.25f, 2000.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
                 config->DlssNrWhitePointScale = wpScale;
 
-            HelpMarker("Brightness reference used to prepare HDR colour for NR. Higher values darken the model input; "
-                       "lower values brighten it.\nAdjust if NR loses detail or produces colour shifts.");
+            HelpMarker("Higher values darken the NR input; lower values brighten it.");
         }
 
         // Directly under the white point, because that is the number it moves and the number the
@@ -643,8 +622,7 @@ static void RenderInput(Config* config, float menuResScale)
                 ImGui::Checkbox("Show exposure meter", &meter))
                 config->DlssNrScanMeter = meter;
 
-            HelpMarker(
-                "Show the scanned exposure value and a colour indicator. Display only; does not change the image.");
+            HelpMarker("Display the scanned value. Does not change the image.");
 
             // Shown when the scan is actually running, whichever way it got switched on.
             if (DlssNr::ExposureScan::Scanning())
@@ -694,8 +672,7 @@ static void RenderInput(Config* config, float menuResScale)
 
                 ImGui::EndDisabled();
 
-                HelpMarker("Save the current exposure and white point as a calibration point.\nAdjust Paper white for "
-                           "the first point, then Trim for additional lighting conditions. Up to 8 points.");
+                HelpMarker("Save exposure and white point. Up to 8 calibration points.");
 
                 if (!isSource)
                     ImGui::TextDisabled("Scanned exposure is not the selected white point source.");
@@ -763,8 +740,7 @@ static void RenderInput(Config* config, float menuResScale)
                     if (ImGui::Checkbox("Invert exposure tracking", &inverted))
                         config->DlssNrScanInverted = inverted;
 
-                    HelpMarker("Reverse how scanned exposure changes the white point. Only needed with one calibration "
-                               "point.");
+                    HelpMarker("Reverse exposure response for single-point calibration.");
                 }
 
                 // The scan -> white point readout is shown above the sliders now, not here.
@@ -802,8 +778,7 @@ static void RenderInput(Config* config, float menuResScale)
                                 c.highest, c.moves ? "MOVES" : "flat so far");
                         }
 
-                        ImGui::TextDisabled("Move between bright and dark areas to check exposure tracking.");
-                        ImGui::TextDisabled("A value that only increases may be a counter.");
+                        ImGui::TextDisabled("Unverified exposure candidate.");
                     }
 
                     ImGui::TreePop();
@@ -819,25 +794,40 @@ static void RenderModel(Config* config, float menuResScale)
     constexpr int menuPassLimit = 2;
     {
         int passes = (int) std::clamp(config->DlssNrPasses.value_or_default(), 1u, (unsigned int) menuPassLimit);
-        if (ImGui::SliderInt("Model passes", &passes, 1, menuPassLimit, passes == 1 ? "%d (normal)" : "%dx model cost",
-                             ImGuiSliderFlags_AlwaysClamp))
-            config->DlssNrPasses = (uint32_t) std::clamp(passes, 1, menuPassLimit);
-
-        HelpMarker("Choose 1 or 2 model passes. A second pass strengthens the effect and increases GPU cost.\nEach "
-                   "pass has its own settings and history. Start with 1.");
+        const auto text = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+        const float brightness = std::max({ text.x, text.y, text.z });
+        const auto passColour = [&](int count)
+        {
+            return count == 1 ? ImVec4(brightness * 0.35f, brightness * 0.75f, brightness * 0.45f, text.w)
+                              : ImVec4(brightness * 0.80f, brightness * 0.35f, brightness * 0.32f, text.w);
+        };
+        ImGui::PushStyleColor(ImGuiCol_Text, passColour(passes));
+        const bool open = ImGui::BeginCombo("##Model passes", passes == 1 ? "1" : "2");
+        ImGui::PopStyleColor();
+        if (open)
+        {
+            for (int count = 1; count <= menuPassLimit; ++count)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, passColour(count));
+                if (ImGui::Selectable(count == 1 ? "1" : "2", passes == count))
+                    config->DlssNrPasses = (uint32_t) count;
+                ImGui::PopStyleColor();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Model passes");
     }
 
-    // Any percentage, rather than a handful of steps somebody chose in advance. The lower bound
-    ImGui::TextWrapped("Settings apply when you release a slider.");
     static const char* styles[] = { "Standard", "Natural", "Cinematic" };
-    static const char* inheritedStyles[] = { "Auto (inherit pass 1)", "Standard", "Natural", "Cinematic" };
+    static const char* inheritedStyles[] = { "Auto", "Standard", "Natural", "Cinematic" };
 
     if (ImGui::TreeNodeEx("Pass 1", ImGuiTreeNodeFlags_DefaultOpen))
     {
         int style = (int) std::min(config->DlssNrStyle.value_or_default(), 2u);
         if (ImGui::Combo("Style", &style, styles, IM_ARRAYSIZE(styles)))
             config->DlssNrStyle = (uint32_t) style;
-        HelpMarker("Select the appearance profile: Standard, Natural or Cinematic. Intensity controls its strength.");
+
         DeferredSlider("Intensity", &config->DlssNrIntensity, 0.0f, 2.0f, 1.0f);
         DeferredSlider("Local structure", &config->DlssNrLocalStructure, 0.0f, 2.0f, 1.0f);
         DeferredSlider("Local tone", &config->DlssNrLocalTone, 0.0f, 2.0f, 1.0f);
@@ -845,14 +835,12 @@ static void RenderModel(Config* config, float menuResScale)
         bool mask = config->DlssNrAutoMask.value_or_default();
         if (ImGui::Checkbox("Auto skin mask", &mask))
             config->DlssNrAutoMask = mask;
-        HelpMarker("Use the model's learned skin selection to apply Skin structure without an authored mask.\nAccuracy "
-                   "varies. This is separate from the colour-based mask below.");
+        HelpMarker("Model-based skin selection.");
         ImGui::TreePop();
     }
 
-    if (ImGui::TreeNodeEx("Pass 2", ImGuiTreeNodeFlags_DefaultOpen))
+    if (config->DlssNrPasses.value_or_default() >= 2 && ImGui::TreeNodeEx("Pass 2", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        ImGui::TextWrapped("Defaults: inherit Pass 1; Local tone = 0. Reset restores these defaults.");
         InheritedProfileCombo("Style", &config->DlssNrPass2Style, inheritedStyles, IM_ARRAYSIZE(inheritedStyles));
         DeferredSlider("Intensity", &config->DlssNrPass2Intensity, 0.0f, 2.0f,
                        config->DlssNrIntensity.value_or_default(), "%.2f", true);
@@ -871,7 +859,6 @@ static void RenderModel(Config* config, float menuResScale)
         ImGui::TreePop();
     }
 
-    ImGui::TextWrapped("Pass settings apply to SR and RR on DX12 and native Vulkan.");
 }
 
 static void RenderBlend(Config* config, float menuResScale)
@@ -886,10 +873,7 @@ static void RenderBlend(Config* config, float menuResScale)
         if (ImGui::Checkbox("Match HDR brightness response (experimental)", &hdrTransfer))
             config->DlssNrHdrTransfer = hdrTransfer;
         ImGui::EndDisabled();
-        HelpMarker("Measure how the game changes brightness between SR and the finished HDR picture, then adjust "
-                   "the early NR edit accordingly.\nActive for HDR10/scRGB with scene-linear input and DLSS SR. "
-                   "Unreliable regions use the existing transfer. Colour grading, bloom and HUD remain approximate.\n"
-                   "Adds a clean-frame copy and a GPU analysis pass; no extra model pass. Off by default.");
+        HelpMarker("Match early NR brightness changes to the finished HDR image. Adds GPU work; unreliable fits fall back.");
     }
     float transfer = config->DlssNrTransferStrength.value_or_default();
     if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 2.0f, "%.2f"))
@@ -899,7 +883,7 @@ static void RenderBlend(Config* config, float menuResScale)
     if (ImGui::SmallButton("Reset##detail"))
         config->DlssNrTransferStrength = 1.0f;
 
-    HelpMarker("Overall NR detail strength: 0 = no effect, 1 = normal, above 1 = exaggerated.");
+    HelpMarker("0 = no detail change. 1 = normal.");
 
     float colour = config->DlssNrColourStrength.value_or_default();
     if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 4.0f, "%.2f"))
@@ -909,12 +893,10 @@ static void RenderBlend(Config* config, float menuResScale)
     if (ImGui::SmallButton("Reset##colour"))
         config->DlssNrColourStrength = 1.0f;
 
-    HelpMarker("NR colour strength: 0 = preserve game colours, 1 = model colours, above 1 = stronger saturation.");
+    HelpMarker("0 = game colours. 1 = model colours. Above 1 boosts saturation.");
 
     if (ImGui::TreeNode("Skin and environment (final edit)"))
     {
-        ImGui::TextWrapped("Select skin by colour and adjust the final NR effect separately for skin and scenery. "
-                           "Selection can be inaccurate; check Preview.");
         bool filter = config->DlssNrSkinProtection.value_or_default();
         if (ImGui::Checkbox("Separate skin / environment controls", &filter))
             config->DlssNrSkinProtection = filter;
@@ -922,14 +904,13 @@ static void RenderBlend(Config* config, float menuResScale)
         bool tone = config->DlssNrSkinToneEnabled.value_or_default();
         if (ImGui::Checkbox("Allow skin tone / colour changes", &tone))
             config->DlssNrSkinToneEnabled = tone;
-        HelpMarker("Allow NR colour changes in the selected skin region. Turn off to preserve its colour; detail can "
-                   "still change.");
+        HelpMarker("Allow skin colour changes while retaining separate detail control.");
         const auto slider = [](const char* label, auto& option)
         {
             float v = option.value_or_default();
             if (ImGui::SliderFloat(label, &v, 0.0f, 1.0f, "%.2f"))
                 option = v;
-            HelpMarker("NR strength in this region: 0 = no change, 1 = full effect.");
+            HelpMarker("0 = unchanged. 1 = full effect.");
         };
         slider("Skin detail / lighting", config->DlssNrSkinDetail);
         ImGui::BeginDisabled(!tone);
@@ -954,8 +935,7 @@ static void RenderBlend(Config* config, float menuResScale)
     if (ImGui::SmallButton("Reset##guard"))
         config->DlssNrMaxRatio = 2.0f;
 
-    HelpMarker("Limit how much NR can brighten or darken a pixel. Lower values restrict highlight changes; higher "
-               "values allow more.");
+    HelpMarker("Limit pixel brightening and darkening.");
 }
 
 static void RenderInspect(Config* config, float menuResScale)
@@ -964,28 +944,27 @@ static void RenderInspect(Config* config, float menuResScale)
     if (ImGui::Checkbox("Hold frame", &held))
         config->DlssNrHoldFrame = held;
 
-    HelpMarker("Freeze NR's input to compare its settings. The game's HUD and later effects may keep updating.\nDoes "
-               "not re-run SR/RR or show changes to their settings. Turn off to resume.");
+    HelpMarker("Freeze a frame for NR tuning. Later game effects may update; temporal behaviour is not representative.");
 
     static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
     int compare = (int) config->DlssNrCompare.value_or_default();
     if (ImGui::Combo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames)))
         config->DlssNrCompare = (uint32_t) compare;
 
-    HelpMarker("Compare the original and NR result. Side by side fits both images; Wipe divides one full-size image.");
+    HelpMarker("Compare the original and NR output.");
 
     if (compare != 0)
     {
         bool swap = config->DlssNrCompareSwap.value_or_default();
         if (ImGui::Checkbox("Swap sides", &swap))
             config->DlssNrCompareSwap = swap;
-        HelpMarker("Swap the original and NR sides.");
+
 
         bool tags = config->DlssNrCompareTags.value_or_default();
         if (ImGui::Checkbox("Label the sides", &tags))
             config->DlssNrCompareTags = tags;
 
-        HelpMarker("Display labels identifying the original and NR sides.");
+
 
         if (tags)
         {
@@ -1001,7 +980,7 @@ static void RenderInspect(Config* config, float menuResScale)
         if (ImGui::SliderFloat("Zoom", &zoom, 1.0f, 2.0f, "%.2f"))
             config->DlssNrCompareZoom = std::clamp(zoom, 1.0f, 2.0f);
 
-        HelpMarker("Side-by-side zoom: 1 = fit the whole image, 2 = fill each half by cropping the sides.");
+        HelpMarker("1 = fit. 2 = crop and enlarge.");
     }
 
     if (compare == 2)
@@ -1010,7 +989,7 @@ static void RenderInspect(Config* config, float menuResScale)
         if (ImGui::SliderFloat("Split", &split, 0.0f, 1.0f, "%.2f"))
             config->DlssNrCompareSplit = std::clamp(split, 0.0f, 1.0f);
 
-        HelpMarker("Position of the comparison boundary. Swap sides reverses which image appears on each side.");
+        HelpMarker("Move the comparison boundary.");
     }
 
     static const char* debugNames[] = { "Off", "Proxy (what the model sees)", "Model output (raw)",
@@ -1019,7 +998,7 @@ static void RenderInspect(Config* config, float menuResScale)
     if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
         config->DlssNrDebugView = (uint32_t) debugView;
 
-    HelpMarker("Show the model input, raw output, or a 20x amplified difference. Grey in Difference means no change.");
+    HelpMarker("Difference is amplified 20x. Grey means unchanged.");
 }
 
 void RenderMenu(Config* config, float menuResScale)
@@ -1036,7 +1015,7 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrEnabled = enabled;
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
-                "Requires nvngx_dlssnr.dll and a compatible NVIDIA driver. Disabling NR stops its GPU work.");
+                "Enable NR processing.");
 
         bool applyModel = config->DlssNrApplyModel.value_or_default();
         if (PipelineUi::CheckboxWrapped("Apply model", &applyModel, toggleWidth))
@@ -1061,13 +1040,9 @@ void RenderMenu(Config* config, float menuResScale)
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(
-                deferredActive ? "Generate before SR, apply after SR already runs the model before upscale."
-                : finished     ? "Run the model at the smaller input size, upscale its changes with DLSS, then apply "
-                                 "them to the finished picture.\nExperimental: the colour transfer is approximate and "
-                                 "may look different. Requires DLSS SR; does not support RR."
-                               : "On: generate and apply NR before SR or combined RR+SR. Off: run it afterward.\n"
-                                 "Before RR is experimental. Unsupported input layouts fall back after upscaling.");
+            ImGui::SetTooltip(deferredActive ? "This mode always generates before upscale."
+                              : finished ? "Generate early; apply the edit to the finished frame."
+                                         : "Run NR before the upscaler.");
 
         if (PipelineUi::CheckboxWrapped("Apply NR to the finished picture", &finished, toggleWidth))
         {
@@ -1075,11 +1050,7 @@ void RenderMenu(Config* config, float menuResScale)
             DlssNr::RetryAfterFailure();
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "Apply NR after the game has finished its lighting and effects. This may help with green noise.\n"
-                "Works with DirectX 12, the DirectX 11 bridge, or Vulkan, including SDR, HDR10 and scRGB.\n"
-                "It can also change the HUD and menus. Enable Generate model before upscale to generate the changes "
-                "earlier.");
+            ImGui::SetTooltip("Apply NR after game effects and HUD.");
 
         ImGui::SameLine(toggleRight);
         bool deferredDlss = config->DlssNrDeferredDlss.value_or_default();
@@ -1088,13 +1059,8 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrDeferredDlss = deferredDlss;
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(
-                finished
-                    ? "For the finished picture, use Generate model before upscale to generate the changes earlier."
-                    : "Compute NR at input resolution, upscale its changes with DLSS, then apply them after SR.\n"
-                      "Experimental: may flicker and adds GPU cost. Requires DLSS on DX12 or its bridges; does not "
-                      "support RR.\nForces Generate model before upscale on. Disable Hold frame, Compare and Debug "
-                      "view.");
+            ImGui::SetTooltip(finished ? "Use Generate model before upscale."
+                                      : "Generate early, upscale the edit with the private backend, then apply it after SR.");
         ImGui::Spacing();
 
         PipelineUi::View view;
@@ -1134,11 +1100,14 @@ void RenderMenu(Config* config, float menuResScale)
         case PipelineUi::Section::Blend:
             RenderBlend(config, menuResScale);
             break;
-        case PipelineUi::Section::Inspect:
-            RenderInspect(config, menuResScale);
-            break;
         }
         ImGui::PopItemWidth();
+        if (ImGui::CollapsingHeader("Inspect NR"))
+        {
+            ImGui::PushItemWidth(std::min(220.0f * menuResScale, ImGui::GetContentRegionAvail().x * 0.42f));
+            RenderInspect(config, menuResScale);
+            ImGui::PopItemWidth();
+        }
     }
 }
 

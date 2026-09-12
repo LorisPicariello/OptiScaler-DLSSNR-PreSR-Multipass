@@ -298,6 +298,20 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
         return false;
     }
 
+    // Hold the inputs shared by NR and SR, not just NR's colour. Restore temporary
+    // jitter/exposure/reset parameters even when evaluation exits early.
+    const auto holdStates = NrStates(interop);
+    const D3D12_RESOURCE_STATES holdInputStates[] = {
+        holdStates.color, holdStates.depth, holdStates.motion, holdStates.exposure
+    };
+    NeuralRendering->BeginInputHold(InCommandList, InParameters, holdInputStates);
+    struct RestoreHoldParameters
+    {
+        DlssNr_Dx12* shader;
+        NVSDK_NGX_Parameter* params;
+        ~RestoreHoldParameters() { shader->EndInputHold(params); }
+    } restoreHold { NeuralRendering.get(), InParameters };
+
     if (Config::Instance()->OverrideSharpness.value_or_default())
         _sharpness = Config::Instance()->Sharpness.value_or_default();
     else

@@ -206,6 +206,34 @@ int main()
     for (NVSDK_NGX_Parameter* table : { static_cast<NVSDK_NGX_Parameter*>(&parameters),
                                        static_cast<NVSDK_NGX_Parameter*>(&bridgeParameters) })
     {
+        NrHoldParameters_Dx12 held;
+        table->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, 0.25f);
+        table->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 2.0f);
+        table->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, 1024u);
+        table->Set(NVSDK_NGX_Parameter_Reset, 0u);
+        held.Capture(table);
+        table->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, -0.5f);
+        table->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 4.0f);
+        table->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, 1280u);
+        held.Apply(table);
+        float jitter = 0, exposure = 0;
+        unsigned width = 0, reset = 0;
+        table->Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &jitter);
+        table->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &exposure);
+        table->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &width);
+        table->Get(NVSDK_NGX_Parameter_Reset, &reset);
+        assert(jitter == 0.25f && exposure == 2.0f && width == 1024u && reset == 1u);
+        assert(!DispatchShaderPipeline(pipeline)); // restoration must also work after a failed evaluate
+        held.Restore(table);
+        table->Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &jitter);
+        table->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &exposure);
+        table->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &width);
+        table->Get(NVSDK_NGX_Parameter_Reset, &reset);
+        assert(jitter == -0.5f && exposure == 4.0f && width == 1280u && reset == 0u);
+        held.Apply(table, false); // first live frame resets history, without restoring held metadata
+        table->Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &jitter);
+        assert(jitter == -0.5f);
+        held.Restore(table);
         {
             RestoreUpscalerResources_Dx12 restore(table);
             SetUpscalerResource_Dx12(table, NVSDK_NGX_Parameter_Color, &intermediate);

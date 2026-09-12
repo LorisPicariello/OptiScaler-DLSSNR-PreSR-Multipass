@@ -77,10 +77,37 @@ a follow-up if the flag alone is not enough.
 - Inert when NR is off.
 - Passthrough unaffected (the freeze is on the encode's source, ahead of the passthrough branch).
 
-## Scope
+## Scope of the original implementation
 
 - v1 (shipped): D3D12 path — freeze colour + white point; the Compare category + moved settings + the
   Hold toggle. Adversarially reviewed (pass barriers/lifetime + menu) before deploy.
 - v2 (follow-ups): reset model history each held frame (snap instead of morph); freeze depth + motion
   guides too (fully clean, camera-independent); native Vulkan hold; skip the meter dispatch while held;
   a keybind; a two-version wipe (hold A, change setting, wipe against the held A).
+
+## Early-generation correction (September 2026)
+
+This revision extends the original implementation described above. On the shared DX12 path,
+including DX11 upscalers using its bridge, early generation now snapshots colour, depth,
+motion vectors and optional exposure before NR and SR. Each subsequent evaluate copies that
+same snapshot into the current input resources, preserving their identities and arrival states.
+Jitter, motion scale, exposure, frame interval and active regions also hold their captured values;
+the caller's parameters are restored after evaluation, including early returns. SR and NR receive
+a reset while held, and SR receives one reset when returning to live input. This is for still-image
+tuning, not judging temporal reconstruction quality. Snapshot allocations exist only after hold-on.
+
+Snapshots recapture on route, input/output shape or input-presence changes. Discarding the
+unsubmitted capture command list invalidates the snapshot. Model setting changes retain the held
+inputs so tuning can re-run on the same frame. Held NR uses its saved white point rather than live
+GPU exposure. Deferred generation accepts Hold frame, but still rejects Compare/Debug/mask preview.
+
+For early generation applied to the finished picture, one clean presentation texture is held
+per NR owner, rather than one per rotating slot. Each residual is applied to that same clean
+image. Queue fences protect its reuse and replacement. The previous held residual can bridge
+model warm-up frames while its slot is still valid. Full late NR and normal post-SR hold retain
+their existing paths. Earlier paths can still show changes from downstream game effects/HUD.
+
+Inspect NR is now a separate collapsible heading outside the pipeline chart. Native Vulkan hold
+is still unimplemented, and carry-across-RR still rejects hold. Additional RR-specific guides,
+reactive masks and alternative upscalers have not been validated with this snapshot mechanism.
+Automated proxy and GPU-copy regressions passed; BG3 and other games require user testing.

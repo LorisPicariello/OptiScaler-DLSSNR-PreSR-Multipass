@@ -14,8 +14,7 @@ enum class Section
     Placement,
     Input,
     Model,
-    Blend,
-    Inspect
+    Blend
 };
 enum class Route
 {
@@ -42,15 +41,13 @@ inline const char* SectionName(Section section)
     switch (section)
     {
     case Section::Placement:
-        return "Placement - choose where NR runs";
+        return "Placement";
     case Section::Input:
-        return "Prepare input - resolution, HDR and exposure";
+        return "Input";
     case Section::Model:
-        return "Model passes - generate the edit";
+        return "Model passes";
     case Section::Blend:
-        return "Apply edit - strength, skin and highlights";
-    case Section::Inspect:
-        return "Inspect NR - hold, compare and debug";
+        return "Apply NR edit";
     }
     return "";
 }
@@ -100,9 +97,7 @@ inline void DrawTimingBar(double nrMs, double frameMs)
                             ImGui::GetColorU32(ImGuiCol_Button));
     ImGui::Dummy(size);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Green: measured NR GPU interval. Blue: estimated remaining rendered-frame time.\n"
-                          "Frame interval includes waits and overlapping work; NR samples can lag behind it.\n"
-                          "This is not a measurement of the DLSS/FSR frame-generation feature or added NR latency.");
+        ImGui::SetTooltip("NR GPU time versus frame interval. Work can overlap.");
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextDisabled("Rendered frame: %.2f ms%s", frameMs,
                         overlapping ? " (NR overlaps/exceeds this interval)" : "");
@@ -113,9 +108,6 @@ inline void DrawTimingBar(double nrMs, double frameMs)
 inline void Draw(const View& view, Section& selected)
 {
     ImGui::PushID("NR pipeline chart");
-    ImGui::TextUnformatted("Configured render pipeline");
-    ImGui::TextWrapped(view.enabled ? "Select a stage to edit its settings."
-                                    : "NR is off. Its settings remain available below.");
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const float width = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
     const float gap = ImGui::GetFontSize() * 1.5f;
@@ -151,7 +143,7 @@ inline void Draw(const View& view, Section& selected)
     const auto model = [&](int lane, int row)
     {
         return add(lane, row, "NR model",
-                   std::to_string(view.passes) + (view.passes == 1 ? " pass / tuning" : " passes / tuning"),
+                   std::to_string(view.passes) + (view.passes == 1 ? " pass" : " passes"),
                    (int) Section::Model);
     };
     const auto apply = [&](int row)
@@ -304,9 +296,6 @@ inline void Draw(const View& view, Section& selected)
         ImGui::SameLine();
         tool("Apply edit", Section::Blend);
     }
-    tool("Inspect NR: hold / compare / debug", Section::Inspect);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Inspect the NR boundary. Later game effects may change the image.");
     ImGui::PopID();
 }
 } // namespace DlssNr::PipelineUi

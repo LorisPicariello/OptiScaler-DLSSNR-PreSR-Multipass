@@ -6,7 +6,7 @@ viewed. Runtime status remains visible because unsupported configurations can fa
 fail. The diagram is not a claim that every configured stage is currently executing.
 
 Linear routes stay in one vertical column. Only routes carrying a separate NR edit split
-left/right and rejoin at application. Inspection is a separate tool button below the chart.
+left/right and rejoin at application. Inspection is a separate collapsible heading below the stage settings.
 Enable Neural Rendering, Apply model, Generate model before upscale, Apply NR to the finished
 picture, and Generate before SR/apply after SR sit above it; labels wrap in narrow overlays. The generation toggle keeps the existing before-SR setting
 and is checked and disabled while deferred generation forces that placement.
@@ -14,12 +14,12 @@ and is checked and disabled while deferred generation forces that placement.
 | Section | Existing controls | Role |
 | --- | --- | --- |
 | Top controls / status | Enable Neural Rendering; Apply model; Generate model before upscale; finished-picture mode; generate before/apply after; runtime status and retry | Starts/stops NR work and chooses generation placement. Timing retains its existing meaning. |
-| Game input / placement | Carry edit across RR; accumulation rate; shortcut guidance | Chooses where colour or the separately generated edit joins the game pipeline. |
+| Game input / placement | Carry edit across RR; accumulation rate | Chooses where colour or the separately generated edit joins the game pipeline. |
 | Prepare NR input | Model resolution; downscaler; enlargement; HDR mapping; white-point source; paper white; exposure trim | Prepares the model's working image and controls how its result is resized. Reversible HDR mapping also determines the reconstruction/composition method. |
 | Exposure calibration within input preparation | Scan meter; anchors and their white points; scan trim; inversion; advanced candidate readouts | Calibrates the scanned exposure source. These are attached to input preparation, rather than a separate rendering pass. |
 | NR model | Pass count; pass 1 and pass 2 style, intensity, local structure, local tone, skin structure and automatic skin mask; resets/inheritance | Generates the edit. The chart shows the configured pass count; a second pass has its own settings/history and additional cost. |
 | Apply NR edit | Detail/colour strengths; highlight guard; separate skin/environment detail and colour; skin-colour permission; mask preview | Controls how the result changes the image. Hiding the edit still runs the model. |
-| Inspect NR | Hold frame; comparison mode; swap/labels/label size; side-by-side zoom; wipe split; debug view | Observes the NR boundary through a separate tool button. Later game rendering can still change the displayed image. |
+| Inspect NR | Hold frame; comparison mode; swap/labels/label size; side-by-side zoom; wipe split; debug view | Collapsible tools outside the chart. Later game rendering can still change the displayed image. |
 
 ## Routes
 
@@ -36,7 +36,7 @@ or configure those systems. Depth and motion guide NR but are not separate colou
 Existing restrictions, fallback messages, INI defaults, limits, reset behavior and delayed
 slider commits are preserved. Advanced INI-only settings are not newly exposed or removed.
 
-## Validation
+## Initial chart validation
 
 All 49 NR option references from the preceding menu remain present. The production chart
 was rendered with the repository's ImGui DX11 backend on WARP for all six enabled routes
@@ -44,6 +44,25 @@ and the disabled state. The four editable stage boxes and Inspect tool passed cl
 checks. Both top controls accept clicks on their boxes and wrapped labels; a forced generation
 setting stays disabled on both click targets.
 Rendering algorithms, parameter routing, shaders, timing and INI serialization are unchanged.
+
+## Pass selector and hold-frame revision
+
+The pass selector displays `1` in muted green and `2` in muted red. Both colours scale with
+the overlay's text brightness, including its HDR adjustment. Advanced INI pass counts remain
+available. Tooltips explain the control briefly; backend implementation notes and redundant
+instructions were removed. Inspection no longer appears as a chart node or tool button.
+
+The production chart and pass selector were rendered offscreen for all seven routes/states.
+The proxy regression exercises held sampling/exposure metadata and restoration, including
+an unsuccessful evaluation. A WARP GPU harness using the production input-hold implementation
+passed three rotating input sets, four input textures, release/recapture, and two sizes for
+normal early NR, deferred NR, and both early/finished configurations. No game was launched.
+These checks do not establish in-game visual stability or HDR display brightness.
+
+Hold-frame now freezes colour, depth, motion, exposure and sampling metadata before the shared
+DX12 upscaler call when generation is early. Deferred NR is no longer disabled by hold-frame.
+Early generation with finished-picture application also holds one clean finished picture
+across presentation slots. See `OptiScaler/dlssnr/design/frame-hold.md` for limits.
 
 ## Finished-picture backend support
 

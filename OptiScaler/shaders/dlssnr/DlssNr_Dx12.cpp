@@ -5,6 +5,7 @@
 #include <wrl/client.h>
 #include <resource_tracking/ResTrack_Dx12.h>
 #include <with_dx12/dx11_finished_picture.h>
+#include <upscalers/ShaderPipeline_Dx12.h>
 
 #include <dlssnr/DlssNr.h>
 
@@ -325,6 +326,135 @@ struct DlssNr_Dx12::State
 
     // Logical frame identity for deferred pairing; feature readiness keeps the raw submission counter.
     DlssNrSeamClock seamClock;
+
+    struct InputHold
+    {
+        struct Texture
+        {
+            const char* name;
+            const char* alias;
+            ID3D12Resource* frozen = nullptr;
+            D3D12_RESOURCE_DESC desc {};
+        };
+        std::array<Texture, 4> textures {{
+            { NVSDK_NGX_Parameter_Color, "DLSSD.Color" },
+            { NVSDK_NGX_Parameter_Depth, "DLSSD.Depth" },
+            { NVSDK_NGX_Parameter_MotionVectors, "DLSSD.MotionVectors" },
+            { NVSDK_NGX_Parameter_ExposureTexture, "DLSSD.ExposureTexture" }
+        }};
+        NrHoldParameters_Dx12 parameters;
+        D3D12_RESOURCE_DESC outputDesc {};
+        bool active = false;
+        unsigned route = 0;
+        uint64_t generation = 0;
+        ID3D12CommandList* captureCommands = nullptr;
+    } inputHold;
+
+    static bool SameHoldShape(const D3D12_RESOURCE_DESC& a, const D3D12_RESOURCE_DESC& b)
+    {
+        return a.Dimension == b.Dimension && a.Width == b.Width && a.Height == b.Height &&
+               a.DepthOrArraySize == b.DepthOrArraySize && a.MipLevels == b.MipLevels &&
+               a.Format == b.Format && a.SampleDesc.Count == b.SampleDesc.Count;
+    }
+
+    void ReleaseInputHold()
+    {
+        for (auto& texture : inputHold.textures)
+            ParkNrResource(texture.frozen);
+        inputHold.active = false;
+        inputHold.captureCommands = nullptr;
+    }
+
+    void BeginInputHold(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params,
+                        const D3D12_RESOURCE_STATES* states)
+    {
+        if (!cmd || !params)
+            return;
+        const auto& cfg = *Config::Instance();
+        const unsigned route = (cfg.DlssNrRunBeforeSr.value_or_default() ? 1u : 0u) |
+                               (cfg.DlssNrDeferredDlss.value_or_default() ? 2u : 0u) |
+                               (cfg.DlssNrFinishedPicture.value_or_default() ? 4u : 0u);
+        const bool requested = cfg.DlssNrEnabled.value_or_default() && cfg.DlssNrHoldFrame.value_or_default() &&
+                               (route & 3u) != 0;
+        if (!requested)
+        {
+            if (inputHold.active)
+            {
+                ReleaseInputHold();
+                inputHold.parameters.Apply(params, false); // reset SR once when returning to live input
+                nr.reset = true;
+            }
+            return;
+        }
+        ID3D12Resource* live[4] {};
+        auto* output = GetResource(params, NVSDK_NGX_Parameter_Output, "DLSSD.Output");
+        if (!output)
+            return;
+        bool capture = !inputHold.active || inputHold.route != route ||
+                       !SameHoldShape(inputHold.outputDesc, output->GetDesc());
+        for (size_t i = 0; i < inputHold.textures.size(); ++i)
+        {
+            const auto& saved = inputHold.textures[i];
+            live[i] = GetResource(params, saved.name, saved.alias);
+            capture |= (live[i] != nullptr) != (saved.frozen != nullptr) ||
+                       (live[i] && !SameHoldShape(saved.desc, live[i]->GetDesc()));
+        }
+        if (!live[0] || !live[1] || !live[2])
+            return;
+        if (capture)
+        {
+            ReleaseInputHold();
+            Microsoft::WRL::ComPtr<ID3D12Device> device;
+            if (FAILED(cmd->GetDevice(IID_PPV_ARGS(&device))))
+                return;
+            ResTrack_Dx12::HookLateNrQueue(device.Get());
+            // Allocate all snapshots before touching the live resources.
+            for (size_t i = 0; i < inputHold.textures.size(); ++i)
+            {
+                if (!live[i])
+                    continue;
+                auto& saved = inputHold.textures[i];
+                saved.desc = live[i]->GetDesc();
+                if (saved.desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || saved.desc.MipLevels != 1 ||
+                    saved.desc.DepthOrArraySize != 1 || saved.desc.SampleDesc.Count != 1 ||
+                    !(saved.frozen = CreateGuideClone(device.Get(), live[i])))
+                {
+                    ReleaseInputHold();
+                    LOG_WARN("NR hold: unsupported input snapshot {}", saved.name);
+                    return;
+                }
+            }
+            inputHold.parameters.Capture(params);
+            inputHold.outputDesc = output->GetDesc();
+            inputHold.route = route;
+            ++inputHold.generation;
+            inputHold.captureCommands = cmd;
+            ID3D12GraphicsCommandList* real = nullptr;
+            if (Util::CheckForRealObject(__FUNCTION__, cmd, (IUnknown**) &real))
+                inputHold.captureCommands = real;
+            nr.heldActive = false;
+            ParkNrResource(nr.heldColor);
+        }
+        for (size_t i = 0; i < inputHold.textures.size(); ++i)
+        {
+            auto* frozen = inputHold.textures[i].frozen;
+            if (!live[i] || !frozen)
+                continue;
+            // Preserve the original resource identities and arrival states for the game's upscaler.
+            const auto copyState = capture ? D3D12_RESOURCE_STATE_COPY_SOURCE : D3D12_RESOURCE_STATE_COPY_DEST;
+            Barrier(cmd, live[i], states[i], copyState);
+            if (capture)
+            {
+                cmd->CopyResource(frozen, live[i]);
+                Barrier(cmd, frozen, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            }
+            else
+                cmd->CopyResource(live[i], frozen);
+            Barrier(cmd, live[i], copyState, states[i]);
+        }
+        inputHold.active = true;
+        inputHold.parameters.Apply(params);
+    }
 
     // A capture requested from outside the game: when the render path has no fence of its own, the write
     // waits until this frame count, by which point the GPU is certainly past the copies.
@@ -1228,11 +1358,11 @@ struct DlssNr_Dx12::State
             } resetOnGap { *this, epoch };
             Collect();
             const auto& cfg = *Config::Instance();
-            if (cfg.DlssNrHoldFrame.value_or_default() || cfg.DlssNrDebugView.value_or_default() != 0 ||
+            if (cfg.DlssNrDebugView.value_or_default() != 0 ||
                 cfg.DlssNrCompare.value_or_default() != 0 || cfg.DlssNrShowSkinMask.value_or_default() ||
                 (!cfg.DlssNrApplyModel.value_or_default() && !cfg.DlssNrFinishedPicture.value_or_default()))
             {
-                Say("inactive: disable frame hold/debug/compare, and enable Apply model");
+                Say("Disable Debug/Compare and enable Apply model.");
                 return;
             }
             if (cmd->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT ||
@@ -1636,6 +1766,15 @@ struct DlssNr_Dx12::State
         ComPtr<ID3D12Device> device;
         ComPtr<ID3D12CommandQueue> producerQueue;
         Dx11FinishedPictureBridge dx11;
+        // One clean presentation snapshot for the owner, never one per rotating backbuffer/slot.
+        ComPtr<ID3D12Resource> heldFinished;
+        ComPtr<ID3D12Fence> heldFence;
+        uint64_t heldReady = 0, heldGeneration = 0;
+        D3D12_RESOURCE_STATES heldState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        DXGI_COLOR_SPACE_TYPE heldSpace = DXGI_COLOR_SPACE_CUSTOM;
+        bool heldValid = false, heldFailed = false;
+        Slot* heldSlot = nullptr;
+        uint64_t heldSlotSerial = 0;
         uint64_t serial = 0, successes = 0;
         std::string status = "Waiting for a finished picture.";
         bool reset = true;
@@ -1866,6 +2005,12 @@ struct DlssNr_Dx12::State
     void FinishedPictureResetCommandList(ID3D12CommandList* cmd)
     {
         std::lock_guard<std::recursive_mutex> lock(mutex);
+        if (inputHold.captureCommands == cmd)
+        {
+            inputHold.active = false; // recording was discarded before submission
+            inputHold.captureCommands = nullptr;
+            nr.heldActive = false;
+        }
         if (gpuTime)
             gpuTime->ResetRecording(cmd);
         if (ngxTime)
@@ -1912,6 +2057,9 @@ struct DlssNr_Dx12::State
     void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
     {
         std::lock_guard<std::recursive_mutex> lock(mutex);
+        for (UINT i = 0; i < count; ++i)
+            if (lists[i] == inputHold.captureCommands)
+                inputHold.captureCommands = nullptr;
         if (gpuTime)
             gpuTime->Submitted(queue, count, lists);
         if (ngxTime)
@@ -1971,7 +2119,9 @@ struct DlssNr_Dx12::State
             !Config::Instance()->DlssNrFinishedPicture.value_or_default() ||
             !Config::Instance()->DlssNrEnabled.value_or_default())
             return;
-        if (std::none_of(late.slots.begin(), late.slots.end(), [](const auto& slot) {
+        const bool heldPicture = Config::Instance()->DlssNrHoldFrame.value_or_default() && inputHold.active &&
+                                 late.heldValid && late.heldGeneration == inputHold.generation;
+        if (!heldPicture && std::none_of(late.slots.begin(), late.slots.end(), [](const auto& slot) {
                 return slot.pending && slot.submitted;
             }))
             return;
@@ -2039,9 +2189,66 @@ struct DlssNr_Dx12::State
                 slot.frame.OutputHeight == desc.Height && (!latest || slot.serial > latest->serial))
                 latest = &slot;
         }
+        // A tuning change may need a few model warm-up frames. Keep displaying the last
+        // held edit in that gap rather than exposing live/rotating game backbuffers.
+        if (!latest && residualOnly && Config::Instance()->DlssNrHoldFrame.value_or_default() && inputHold.active &&
+            late.heldValid && late.heldGeneration == inputHold.generation && late.heldSlot &&
+            late.heldSlot->serial == late.heldSlotSerial && !late.heldSlot->pending &&
+            late.heldSlot->frame.OutputWidth == desc.Width && late.heldSlot->frame.OutputHeight == desc.Height)
+        {
+            auto& held = *late.heldSlot;
+            bool ready = late.Finished(held);
+            if (!ready)
+            {
+                HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+                ready = event && SUCCEEDED(held.fence->SetEventOnCompletion(held.done, event)) &&
+                        WaitForSingleObject(event, 5000) == WAIT_OBJECT_0;
+                if (event) CloseHandle(event);
+            }
+            if (ready)
+                latest = &held;
+        }
         if (!latest)
             return false; // loading screen, another swapchain, or this real frame was already consumed
         auto& slot = *latest;
+        const bool holdFinished = slot.residualOnly && Config::Instance()->DlssNrHoldFrame.value_or_default() &&
+                                  inputHold.active;
+        if (!holdFinished)
+            late.heldValid = false;
+        if (holdFinished)
+        {
+            if (late.heldFailed)
+                return false;
+            if (late.heldFinished && !SameHoldShape(late.heldFinished->GetDesc(), desc))
+            {
+                // Resize/format change is rare. Drain the last use before replacing the single snapshot.
+                if (late.heldFence && late.heldFence->GetCompletedValue() < late.heldReady)
+                {
+                    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+                    const bool ready = event && SUCCEEDED(late.heldFence->SetEventOnCompletion(late.heldReady, event)) &&
+                                       WaitForSingleObject(event, 5000) == WAIT_OBJECT_0;
+                    if (event) CloseHandle(event);
+                    if (!ready)
+                    {
+                        late.Say("Hold resize failed. Restart the game.");
+                        late.heldFailed = true;
+                        return false;
+                    }
+                }
+                late.heldFinished.Reset();
+                late.heldValid = false;
+            }
+            if (!late.heldFinished)
+            {
+                late.heldFinished.Attach(CreateScratch(late.device.Get(), desc.Format, (unsigned) desc.Width, desc.Height));
+                late.heldState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            }
+            if (!late.heldFinished || (late.heldFence && FAILED(queue->Wait(late.heldFence.Get(), late.heldReady))))
+            {
+                late.Say("Could not hold the finished frame.");
+                return false;
+            }
+        }
         // Drop other submitted evaluates from this picture, not their in-flight resources.
         for (auto& other : late.slots)
             if (other.submitted && other.serial <= slot.serial)
@@ -2054,6 +2261,29 @@ struct DlssNr_Dx12::State
             return false;
         }
         auto* cmd = slot.commands.Get();
+        if (holdFinished)
+        {
+            const bool capture = !late.heldValid || late.heldGeneration != inputHold.generation ||
+                                 late.heldSpace != colorSpace;
+            if (capture)
+            {
+                Barrier(cmd, color, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                Barrier(cmd, late.heldFinished.Get(), late.heldState, D3D12_RESOURCE_STATE_COPY_DEST);
+                cmd->CopyResource(late.heldFinished.Get(), color);
+                Barrier(cmd, late.heldFinished.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                Barrier(cmd, color, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
+                late.heldState = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                late.heldGeneration = inputHold.generation;
+                late.heldSpace = colorSpace;
+                late.heldValid = true;
+            }
+            else
+            {
+                Barrier(cmd, color, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
+                cmd->CopyResource(color, late.heldFinished.Get());
+                Barrier(cmd, color, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+            }
+        }
         const auto before = nr.successfulDispatches;
         bool appliedResidual = false;
         bool matchedResponse = false;
@@ -2230,6 +2460,7 @@ struct DlssNr_Dx12::State
         }
         if (FAILED(cmd->Close()))
         {
+            late.heldFailed |= holdFinished;
             late.Say("Could not finish the picture. Restart the game to retry.");
             slot.pending = true; // quarantine the slot; do not reuse possibly recorded NR resources
             slot.submitted = false;
@@ -2237,11 +2468,19 @@ struct DlssNr_Dx12::State
         }
         ID3D12CommandList* lists[] = { cmd };
         queue->ExecuteCommandLists(1, lists);
-        slot.done = slot.ready + 1;
+        slot.done = std::max(slot.done, slot.ready) + 1; // held replays also need a fresh completion value
         if (FAILED(queue->Signal(slot.fence.Get(), slot.done)))
         {
+            late.heldFailed |= holdFinished;
             late.Say("The graphics queue stopped. Restart the game to retry.");
             return false;
+        }
+        if (holdFinished)
+        {
+            late.heldFence = slot.fence;
+            late.heldReady = slot.done;
+            late.heldSlot = &slot;
+            late.heldSlotSerial = slot.serial;
         }
         const bool ran = slot.residualOnly ? appliedResidual : nr.successfulDispatches > before;
         late.reset = !ran;
@@ -2865,7 +3104,11 @@ struct DlssNr_Dx12::State
                 // Suspend white-point measurement while held: use the snapshot so it cannot drift and
                 // confound the comparison. (No-op on the capture frame, where the snapshot IS whitePoint.)
                 if (nr.heldActive)
+                {
                     whitePoint = nr.heldWhitePoint;
+                    useGameExposure = 0;
+                    exposureTex = nullptr;
+                }
             }
             else if (nr.heldActive)
             {
@@ -4152,6 +4395,7 @@ struct DlssNr_Dx12::State
     ~State()
     {
         WaitForFinishedPicture();
+        ReleaseInputHold();
         ReleaseResources();
         SAFE_RELEASE(buffer);
     }
@@ -4438,6 +4682,19 @@ bool DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmd, ID3D12Resource* colou
     const auto before = _state->nr.successfulDispatches;
     _state->Run(cmd, output, depth, motion, output, info, queue);
     return _state->nr.successfulDispatches != before;
+}
+
+void DlssNr_Dx12::BeginInputHold(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params,
+                                const D3D12_RESOURCE_STATES* inputStates)
+{
+    std::lock_guard lock(_state->mutex);
+    _state->BeginInputHold(cmd, params, inputStates);
+}
+
+void DlssNr_Dx12::EndInputHold(NVSDK_NGX_Parameter* params)
+{
+    std::lock_guard lock(_state->mutex);
+    _state->inputHold.parameters.Restore(params);
 }
 
 bool DlssNr_Dx12::ProcessSeam(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, bool beforeUpscale,
