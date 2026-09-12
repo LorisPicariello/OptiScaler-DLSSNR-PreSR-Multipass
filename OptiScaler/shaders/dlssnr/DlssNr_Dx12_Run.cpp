@@ -462,6 +462,13 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
             Barrier(cmdList, nr.hdrCopy, D3D12_RESOURCE_STATE_COPY_SOURCE,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
+        else if (!targetSupportsUav)
+        {
+            // The resolve target was made writable even while private DLSS was
+            // warming up. Restore it before the common end-of-frame transition.
+            Barrier(cmdList, nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
 
         MakeModelWritable(nr.output);
         if (nr.passScratch != nullptr)
