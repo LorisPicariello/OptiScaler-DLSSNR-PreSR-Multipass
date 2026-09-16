@@ -44,15 +44,35 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
             late.reset = true;
             continue;
         }
-        if (!DlssNr::FinishedInputReady(slot.producerQueue.Get() == realQueue,
-                                        slot.fence->GetCompletedValue(), slot.ready))
+        const bool sameProducerQueue = slot.producerQueue.Get() == realQueue;
+        const auto producerCompleted = slot.fence->GetCompletedValue();
+        if (!DlssNr::FinishedInputReady(sameProducerQueue, producerCompleted, slot.ready))
         {
-            if (!late.reportedQueueDelay)
+            if (producerCompleted == UINT64_MAX)
+                continue;
+
+            // Native Streamline FG can present before the render submission that would satisfy
+            // this fence. Waiting from that presentation queue can therefore create a cycle
+            // (the reason v0.8.x introduced the no-wait path).
+            if (gameFrameHandoff)
             {
-                LOG_INFO("DLSS-NR finished picture: skipping unfinished cross-queue input to avoid a present/render fence cycle");
-                late.reportedQueueDelay = true;
+                if (!late.reportedQueueDelay)
+                {
+                    LOG_INFO("DLSS-NR finished picture: skipping unfinished cross-queue input to avoid a present/render fence cycle");
+                    late.reportedQueueDelay = true;
+                }
+                continue;
             }
-            continue;
+
+            // Non-native presentation paths (including OptiFG -> XeFG/FSRFG) used a GPU-side
+            // cross-queue wait in v0.7.7. Restoring that ordering here keeps Finished Picture
+            // attached to the real game frame without reintroducing the native Streamline cycle.
+            if (FAILED(queue->Wait(slot.fence.Get(), slot.ready)))
+            {
+                late.reset = true;
+                late.Say("The graphics queue stopped. Restart the game to retry.");
+                continue;
+            }
         }
         if (slot.residualOnly == residualOnly && slot.frame.OutputWidth == desc.Width &&
             slot.frame.OutputHeight == desc.Height && (!latest || slot.serial > latest->serial))
